@@ -1,0 +1,3 @@
+routes=236
+duplicate_route_decorators=0
+template_missing=[('login.html', 'static'), ('base.html', 'static'), ('base.html', 'static')]

@@ -1,0 +1,2 @@
+{% extends 'base.html' %}{% block content %}<div class="card small-card"><h2>{{title}}</h2><p>{{message}}</p><form method="post">
+{% if password_confirm %}<label>Mật khẩu giáo viên</label><input type="password" name="teacher_password" required style="padding:8px;margin:8px 0;width:100%;box-sizing:border-box">{% endif %}<button class="danger">XÁC NHẬN XÓA</button> <a class="btn" href="{{url_for('dashboard')}}">Hủy</a></form></div>{% endblock %}

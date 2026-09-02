@@ -1,0 +1,12 @@
+{% extends 'base.html' %}{% block content %}
+<div class="card"><h2>Trạng thái tài khoản phụ huynh</h2>
+<p><b>Học sinh:</b> {{ student['name'] }}</p>
+<p><b>Lớp:</b> {{ student['class_name'] }}</p>
+<p><b>Tổ:</b> {{ student['team'] }}</p>
+<p><b>Nhóm:</b> {{ student['group_name'] }}</p>
+<p><b>Tài khoản phụ huynh:</b> {{ parent['username'] if parent else 'Chưa tạo' }}</p>
+<p><b>Đã xác thực:</b> {{ 'Có' if parent and parent['verified'] else 'Chưa' }}</p>
+<p><b>Cần đổi mật khẩu:</b> {{ 'Có' if parent and parent['must_change'] else 'Không' }}</p>
+<p><b>Thông báo chuyển lớp:</b> {{ student['transfer_notice'] or 'Không có' }}</p>
+</div>
+{% endblock %}

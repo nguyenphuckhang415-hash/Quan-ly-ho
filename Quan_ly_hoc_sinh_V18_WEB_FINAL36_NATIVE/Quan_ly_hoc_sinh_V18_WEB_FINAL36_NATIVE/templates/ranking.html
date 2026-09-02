@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<div class="card"><h2>🏆 XẾP HẠNG</h2><table><tr><th>#</th><th>Học sinh</th><th>Lớp</th><th>Tổ</th><th>Tổng điểm</th></tr>{% for r in rows %}<tr><td>{{loop.index}}</td><td>{{r.name}}</td><td>{{r.class_name}}</td><td>{{r.team}}</td><td><b>{{r.total}}</b></td></tr>{% endfor %}</table></div>{% endblock %}

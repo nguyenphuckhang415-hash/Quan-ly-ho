@@ -1,0 +1,8 @@
+{% extends 'base.html' %}{% block content %}
+<div class="card"><h2>🧩 SƠ ĐỒ LỚP TƯƠNG TÁC</h2><form method="post" class="inline-form" id="diagramForm"><label>Kiểu sơ đồ<select name="layout" id="layout"><option value="grid" {% if layout=='grid' %}selected{% endif %}>Lưới</option><option value="rows" {% if layout=='rows' %}selected{% endif %}>Theo hàng</option><option value="semicircle" {% if layout=='semicircle' %}selected{% endif %}>Bán nguyệt</option></select></label><input type="hidden" name="positions" id="positions"><button>LƯU BỐ CỤC</button></form><div class="seat-grid {{layout}}" id="seatGrid">{% for r in rows %}<div class="seat" data-id="{{r.id}}" draggable="true"><b>{{r.name}}</b><small>{{r.class_name}} • Tổ {{r.team}}</small></div>{% endfor %}</div></div>
+<script>
+const grid=document.getElementById('seatGrid'), hidden=document.getElementById('positions');
+let drag=null;
+grid.querySelectorAll('.seat').forEach(el=>{el.addEventListener('dragstart',()=>drag=el);el.addEventListener('dragover',e=>e.preventDefault());el.addEventListener('drop',()=>{if(drag&&drag!==el){const a=[...grid.children];const i=a.indexOf(drag),j=a.indexOf(el);if(i<j)grid.insertBefore(drag,el.nextSibling);else grid.insertBefore(drag,el);}})});
+document.getElementById('diagramForm').addEventListener('submit',()=>{hidden.value=JSON.stringify([...grid.querySelectorAll('.seat')].map((e,i)=>({id:e.dataset.id,x:i,y:0})));});
+</script>{% endblock %}

@@ -1,0 +1,11 @@
+{% extends 'base.html' %}{% block content %}
+<div class="card"><h2>Gói xác nhận tài khoản</h2>
+<p><b>Học sinh:</b> {{ student['name'] }}</p>
+<p><b>Phụ huynh:</b> {{ student['parent_name'] }}</p>
+<p><b>Email phụ huynh:</b> {{ student['live_parent_email'] or student['parent_email'] }}</p>
+<p><b>Tài khoản học sinh:</b> {{ student['student_username'] }}</p>
+<p><b>Tài khoản phụ huynh:</b> {{ student['parent_username'] or 'Chưa có' }}</p>
+<p><b>Mật khẩu phụ huynh:</b> {{ student['parent_password'] or '—' }}</p>
+<p><b>Mã truy cập học sinh:</b> {{ student['access_code'] }}</p>
+</div>
+{% endblock %}

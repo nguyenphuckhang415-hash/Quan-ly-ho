@@ -1,0 +1,5 @@
+FINAL36 audit
+- Added web-native equivalents for the last 11 semantic V18 helpers.
+- Added stateful chat contact API and V18 verification API.
+- Static route/template checks performed.
+- Python syntax checks performed.

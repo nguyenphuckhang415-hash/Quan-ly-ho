@@ -1,0 +1,444 @@
+    def chat_center(self):
+        self.clear()
+        self.configure(bg=COLORS["bg"])
+        shell=tk.Frame(self,bg=COLORS["bg"]); shell.pack(fill="both",expand=True)
+        top=tk.Frame(shell,bg="white",bd=1,relief="solid"); top.pack(fill="x",padx=14,pady=(12,8))
+        tk.Label(top,text="💬 TRUNG TÂM CHAT",bg="white",fg=COLORS["navy"],font=("Arial",20,"bold")).pack(side="left",padx=14,pady=10)
+        if self.current_student:
+            tk.Label(top,text="Chat riêng với giáo viên + xem nhóm lớp",bg="white",fg=COLORS["gray"],font=("Arial",9)).pack(side="left")
+        else:
+            tk.Label(top,text="Nhiều nhóm theo lớp • Chat riêng giáo viên ↔ HS/PH",bg="white",fg=COLORS["gray"],font=("Arial",9)).pack(side="left")
+        self.button(top,"↩ Quay lại",self.student_home if self.current_student else self.teacher_dashboard,13,"#7f8c8d").pack(side="right",padx=8,pady=8)
+
+        body=tk.Frame(shell,bg=COLORS["bg"]); body.pack(fill="both",expand=True,padx=14,pady=(0,10))
+        left=tk.Frame(body,bg="white",bd=1,relief="solid",width=300); left.pack(side="left",fill="y",padx=(0,7)); left.pack_propagate(False)
+        tk.Label(left,text="Tìm kiếm",bg="white",fg=COLORS["gray"],font=("Arial",9,"bold")).pack(anchor="w",padx=12,pady=(10,3))
+        search=tk.Entry(left,font=("Arial",10)); search.pack(fill="x",padx=12,pady=(0,8))
+        lbframe=tk.Frame(left,bg="white"); lbframe.pack(fill="both",expand=True,padx=8,pady=4)
+        sb=tk.Scrollbar(lbframe,orient="vertical"); lb=tk.Listbox(lbframe,activestyle="none",font=("Arial",10),bg="#f8fbff",bd=0,highlightthickness=0,yscrollcommand=sb.set)
+        sb.config(command=lb.yview); lb.pack(side="left",fill="both",expand=True); sb.pack(side="right",fill="y")
+        right=tk.Frame(body,bg="white",bd=1,relief="solid"); right.pack(side="left",fill="both",expand=True)
+        chat_head=tk.Frame(right,bg="#f6f9ff",height=58); chat_head.pack(fill="x"); chat_head.pack_propagate(False)
+        avatar_holder=tk.Frame(chat_head,bg="#f6f9ff"); avatar_holder.pack(side="left",padx=10,pady=7)
+        title_var=tk.StringVar(value="Chọn một cuộc trò chuyện")
+        tk.Label(chat_head,textvariable=title_var,bg="#f6f9ff",fg=COLORS["navy"],font=("Arial",13,"bold")).pack(side="left")
+        tk.Label(chat_head,text="",bg="#f6f9ff").pack(side="left",fill="x",expand=True)
+
+        msg_wrap=tk.Frame(right,bg="#eef5ff"); msg_wrap.pack(fill="both",expand=True)
+        canvas=tk.Canvas(msg_wrap,bg="#eef5ff",bd=0,highlightthickness=0)
+        msg_scroll=tk.Scrollbar(msg_wrap,orient="vertical",command=canvas.yview); canvas.configure(yscrollcommand=msg_scroll.set)
+        canvas.pack(side="left",fill="both",expand=True); msg_scroll.pack(side="right",fill="y")
+        inner=tk.Frame(canvas,bg="#eef5ff")
+        inner_id=canvas.create_window((0,0),window=inner,anchor="nw")
+        inner.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",lambda e:canvas.itemconfigure(inner_id,width=e.width))
+
+        compose=tk.Frame(right,bg="white",bd=1,relief="solid"); compose.pack(fill="x")
+        entry=tk.Text(compose,height=4,wrap="word",font=("Arial",10)); entry.pack(side="left",fill="both",expand=True,padx=8,pady=8)
+        actions=tk.Frame(compose,bg="white",width=390); actions.pack(side="right",fill="y",padx=8,pady=8); actions.pack_propagate(False)
+        attach_path=[""]
+
+        send_btn=[None]
+
+        def set_contact(idx):
+            contacts=current_contacts[0]
+            if idx<0 or idx>=len(contacts): return
+            self.current_chat=contacts[idx]
+            for w in avatar_holder.winfo_children(): w.destroy()
+            if self.current_chat.get("type") == "group":
+                gp=self.current_chat.get("group_avatar_path", "")
+                if gp and os.path.exists(gp) and PIL_OK:
+                    try:
+                        im=Image.open(gp).convert("RGBA")
+                        im.thumbnail((42,42))
+                        ph=ImageTk.PhotoImage(im)
+                        lab=tk.Label(avatar_holder,image=ph,bg="#f6f9ff")
+                        lab.image=ph; lab.pack()
+                    except Exception:
+                        self.avatar_image(avatar_holder,42,"group:"+str(self.current_chat.get("class_name",""))).pack()
+                else:
+                    self.avatar_image(avatar_holder,42,"group:"+str(self.current_chat.get("class_name",""))).pack()
+            else:
+                seed=f"{self.current_chat.get('type')}:{self.current_chat.get('student_id',self.current_chat.get('class_name',''))}:{self.current_chat.get('peer_type','')}"
+                self.avatar_image(avatar_holder,42,seed).pack()
+            title_var.set(self.current_chat.get("label","Chat"))
+            # Nhóm lớp là khu vực chỉ đọc đối với HS/PH.
+            readonly = self._chat_group_read_only()
+            try:
+                entry.configure(state=("disabled" if readonly else "normal"))
+            except Exception:
+                pass
+            if send_btn[0] is not None:
+                send_btn[0].configure(state=("disabled" if readonly else "normal"))
+            render_messages()
+
+        current_contacts=[[]]
+        def refresh_contacts(*_):
+            current_contacts[0]=self._chat_load_contacts(search.get())
+            lb.delete(0,"end")
+            for c in current_contacts[0]: lb.insert("end",c["label"]+"\n  "+c["sub"])
+            if current_contacts[0]:
+                lb.selection_set(0); set_contact(0)
+            else:
+                self.current_chat=None; title_var.set("Không có cuộc trò chuyện phù hợp")
+                for w in inner.winfo_children(): w.destroy()
+        lb.bind("<<ListboxSelect>>",lambda e:set_contact(lb.curselection()[0]) if lb.curselection() else None)
+        search.bind("<KeyRelease>",refresh_contacts)
+
+        def render_messages():
+            for w in inner.winfo_children(): w.destroy()
+            conv=self.current_chat
+            if not conv: return
+            con=connect()
+            if conv["type"]=="group":
+                # Bảo mật: HS/PH chỉ được đọc nhóm đúng lớp của tài khoản hiện tại.
+                if not self._chat_group_allowed_for_current_user(conv.get("class_name")):
+                    con.close()
+                    return
+                rows=con.execute("SELECT * FROM chat_messages WHERE chat_type='group' AND class_name=? ORDER BY id",(conv["class_name"],)).fetchall()
+            else:
+                sid=conv["student_id"]; ptype=conv.get("peer_type","")
+                rows=con.execute("SELECT * FROM chat_messages WHERE chat_type='private' AND peer_student_id=? AND peer_type=? ORDER BY id",(sid,ptype)).fetchall()
+            con.close()
+            for r in rows:
+                mine=(r["sender_type"]=="teacher" and not self.current_student) or (self.current_student and r["sender_student_id"]==self.current_student.get("student_id",self.current_student.get("id")) and r["sender_type"] in ("student","parent"))
+                row=tk.Frame(inner,bg="#eef5ff"); row.pack(fill="x",padx=10,pady=4)
+                side=tk.RIGHT if mine else tk.LEFT
+                bubble=tk.Frame(row,bg="#d9e9ff" if mine else "white",bd=1,relief="solid")
+                bubble.pack(side=side,padx=6,anchor="e" if mine else "w")
+                ah=tk.Frame(bubble,bg=bubble.cget("bg")); ah.pack(fill="x",padx=8,pady=(6,2))
+                self.avatar_image(ah,30,f"{r['sender_type']}:{r['sender_student_id'] or 1}:{r['sender_name']}").pack(side="left")
+                tk.Label(ah,text=r["sender_name"],bg=bubble.cget("bg"),fg=COLORS["navy"],font=("Arial",9,"bold")).pack(side="left",padx=7)
+                tk.Label(ah,text=r["created_at"],bg=bubble.cget("bg"),fg=COLORS["gray"],font=("Arial",8)).pack(side="left")
+                if r["message"]:
+                    tk.Label(bubble,text=r["message"],bg=bubble.cget("bg"),fg=COLORS["dark"],justify="left",wraplength=540,font=("Arial",10)).pack(anchor="w",padx=10,pady=5)
+                if r["attachment_path"]:
+                    af=tk.Frame(bubble,bg=bubble.cget("bg")); af.pack(fill="x",padx=10,pady=3)
+                    tk.Label(af,text="📎 "+os.path.basename(r["attachment_path"]),bg=bubble.cget("bg"),fg=COLORS["blue"],font=("Arial",9,"underline")).pack(side="left")
+                    def open_attachment(path=r["attachment_path"]):
+                        try:
+                            if os.path.exists(path): os.startfile(path)
+                            else: messagebox.showwarning("Tệp","Tệp không còn ở vị trí đã lưu.")
+                        except Exception as ex: messagebox.showerror("Tệp",str(ex))
+                    self.button(af,"Mở",open_attachment,6,COLORS["blue"]).pack(side="right")
+                lc=connect(); liked=lc.execute("SELECT 1 FROM chat_likes WHERE message_id=? AND liker_key=?",(r["id"],self._chat_liker_key())).fetchone(); count=lc.execute("SELECT COUNT(*) n FROM chat_likes WHERE message_id=?",(r["id"],)).fetchone()["n"]; lc.close()
+                def like_message(mid=r["id"]):
+                    cx=connect()
+                    already=cx.execute("SELECT 1 FROM chat_likes WHERE message_id=? AND liker_key=?",(mid,self._chat_liker_key())).fetchone()
+                    if already: cx.execute("DELETE FROM chat_likes WHERE message_id=? AND liker_key=?",(mid,self._chat_liker_key()))
+                    else: cx.execute("INSERT INTO chat_likes(message_id,liker_key,created_at) VALUES(?,?,?)",(mid,self._chat_liker_key(),now()))
+                    cx.commit(); cx.close(); render_messages()
+                # HS/PH ở nhóm lớp chỉ được xem, không được thả tim/tương tác.
+                if not (conv["type"] == "group" and self.current_student):
+                    self.button(bubble,('❤️' if liked else '♡')+f' {count}',like_message,9,"#ee6ca7" if liked else "#a7b4c8").pack(anchor="w",padx=8,pady=(0,6))
+            canvas.update_idletasks(); canvas.yview_moveto(1.0)
+
+        def choose_file():
+            if self.current_student: return
+            path=filedialog.askopenfilename(title="Chọn tệp gửi trong chat")
+            if path:
+                attach_path[0]=path; file_label.config(text="📎 "+os.path.basename(path))
+
+        def send_message():
+            conv=self.current_chat
+            if not conv: return
+            if not self._chat_send_allowed(conv):
+                if conv.get("type") == "group":
+                    messagebox.showwarning("Nhóm lớp","Nhóm lớp chỉ để học sinh/phụ huynh xem. Chỉ giáo viên được gửi tin nhắn.")
+                else:
+                    messagebox.showwarning("Chat riêng","Học sinh/phụ huynh chỉ được nhắn tin riêng với giáo viên.")
+                return
+            text=entry.get("1.0","end").strip()
+            if not text and not attach_path[0]: return
+            if self.current_student:
+                stype,sid,sname=self._chat_identity()
+                # Chặn tuyệt đối việc gửi private sang tài khoản HS/PH khác.
+                if conv.get("type") != "private" or conv.get("student_id") != sid or conv.get("peer_type") != stype:
+                    messagebox.showwarning("Chat riêng","Bạn chỉ có thể nhắn tin riêng với giáo viên.")
+                    return
+            else:
+                stype,sid,sname="teacher",None,TEACHER_NAME
+                if conv.get("type") == "private":
+                    target_id=conv.get("student_id")
+                    target_type=conv.get("peer_type")
+                    con_chk=connect()
+                    exists=con_chk.execute("SELECT 1 FROM students WHERE id=? AND status IN ('approved','verified')",(target_id,)).fetchone()
+                    con_chk.close()
+                    if not exists or target_type not in ("student","parent"):
+                        messagebox.showerror("Chat riêng","Tài khoản người nhận không hợp lệ.")
+                        return
+            con=connect()
+            con.execute("INSERT INTO chat_messages(chat_type,class_name,peer_student_id,peer_type,sender_type,sender_student_id,sender_name,message,attachment_path,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(
+                conv["type"],conv.get("class_name", ""),conv.get("student_id"),conv.get("peer_type", ""),stype,sid,sname,text,attach_path[0],now()))
+            con.commit(); con.close(); entry.configure(state="normal"); entry.delete("1.0","end"); attach_path[0]=""; file_label.config(text=""); render_messages()
+
+        file_label=tk.Label(actions,text="",bg="white",fg=COLORS["gray"],font=("Arial",8),wraplength=300)
+        file_label.grid(row=0,column=0,columnspan=2,sticky="ew",padx=2,pady=(0,3))
+        actions.grid_columnconfigure(0,weight=1,minsize=170)
+        actions.grid_columnconfigure(1,weight=1,minsize=170)
+        actions.grid_rowconfigure(1,weight=1)
+        actions.grid_rowconfigure(2,weight=1)
+        actions.grid_rowconfigure(3,weight=1)
+        if not self.current_student:
+            self.button(actions,"📎 Gửi tệp",choose_file,1,COLORS["orange"]).grid(row=1,column=0,sticky="nsew",padx=4,pady=4,ipady=3)
+            self.button(actions,"💬 Nhắn riêng",lambda:self.chat_private_picker(),1,COLORS["purple"]).grid(row=1,column=1,sticky="nsew",padx=4,pady=4,ipady=3)
+            self.button(actions,"⚡ Tin nhắn nhanh",lambda:self.chat_quick_picker(entry),1,COLORS["purple"]).grid(row=2,column=0,sticky="nsew",padx=4,pady=4,ipady=3)
+            self.button(actions,"⏰ Nhắc hẹn",self.chat_reminder_dialog,1,COLORS["pink"]).grid(row=2,column=1,sticky="nsew",padx=4,pady=4,ipady=3)
+        send_btn[0]=self.button(actions,"➤ Gửi",send_message,1,COLORS["blue"])
+        send_btn[0].grid(row=3,column=0,columnspan=2,sticky="nsew",padx=4,pady=(5,3),ipady=4)
+
+        refresh_contacts()
+        # Nếu mở từ nút "Nhắn riêng", ưu tiên đúng cuộc trò chuyện đã chọn.
+        preferred_chat=getattr(self,"_preferred_chat",None)
+        if preferred_chat:
+            try:
+                contacts_now=current_contacts[0]
+                idx=next(i for i,c in enumerate(contacts_now)
+                         if c.get("type")==preferred_chat.get("type")
+                         and c.get("student_id")==preferred_chat.get("student_id")
+                         and c.get("peer_type")==preferred_chat.get("peer_type"))
+                lb.selection_clear(0,"end"); lb.selection_set(idx); lb.see(idx); set_contact(idx)
+            except Exception:
+                pass
+            self._preferred_chat=None
+        if self.chat_refresh_job:
+            try:self.after_cancel(self.chat_refresh_job)
+            except Exception:pass
+        def periodic():
+            if self.winfo_exists() and self.current_chat:
+                render_messages()
+                self.chat_refresh_job=self.after(5000,periodic)
+        self.chat_refresh_job=self.after(5000,periodic)
+
+    def chat_private_picker(self):
+        """Chọn nhanh một học sinh/phụ huynh để mở cuộc trò chuyện riêng."""
+        if self.current_student:
+            return
+        contacts=[c for c in self._chat_load_contacts("") if c.get("type")=="private"]
+        win=tk.Toplevel(self)
+        win.title("💬 Nhắn riêng")
+        win.geometry("560x430")
+        win.minsize(480,360)
+        tk.Label(win,text="Chọn học sinh hoặc phụ huynh để nhắn riêng",
+                 font=("Arial",13,"bold"),fg=COLORS["navy"]).pack(pady=(12,6))
+        lb=tk.Listbox(win,font=("Arial",11),activestyle="none")
+        lb.pack(fill="both",expand=True,padx=14,pady=8)
+        for c in contacts:
+            lb.insert("end",c["label"]+"  —  "+c["sub"])
+        def open_private():
+            sel=lb.curselection()
+            if not sel:
+                messagebox.showwarning("Nhắn riêng","Hãy chọn một học sinh hoặc phụ huynh.")
+                return
+            target=contacts[sel[0]]
+            self._preferred_chat=target
+            win.destroy()
+            self.chat_center()
+        self.button(win,"💬 Mở cuộc trò chuyện",open_private,15,COLORS["purple"]).pack(pady=8)
+        self.button(win,"Đóng",win.destroy,12,"#7f8c8d").pack(pady=(0,12))
+        win.grab_set()
+
+    def chat_quick_picker(self, entry_widget):
+        win=tk.Toplevel(self); win.title("⚡ Tin nhắn nhanh - chỉ giáo viên"); win.geometry("520x360")
+        tk.Label(win,text="Chọn tin nhắn để đưa vào ô soạn",font=("Arial",12,"bold")).pack(pady=10)
+        lb=tk.Listbox(win,font=("Arial",10)); lb.pack(fill="both",expand=True,padx=12,pady=8)
+        con=connect(); rows=con.execute("SELECT id,text FROM chat_quick_messages ORDER BY id").fetchall(); con.close()
+        for r in rows: lb.insert("end",r["text"])
+        def use():
+            sel=lb.curselection()
+            if not sel:return
+            entry_widget.delete("1.0","end"); entry_widget.insert("1.0",lb.get(sel[0])); win.destroy()
+        self.button(win,"Dùng tin này",use,16,COLORS["purple"]).pack(pady=8)
+        self.button(win,"Đóng",win.destroy,12,"#7f8c8d").pack(pady=(0,10))
+
+    def chat_reminder_dialog(self):
+        win=tk.Toplevel(self); win.title("⏰ Nhắc hẹn - chỉ giáo viên"); win.geometry("520x300")
+        fields=[]
+        for i,(lab,default) in enumerate([("Tiêu đề","Nhắc kiểm tra nhiệm vụ"),("Thời gian",""),("Nội dung","")]):
+            tk.Label(win,text=lab+":",font=("Arial",10,"bold")).grid(row=i,column=0,sticky="e",padx=10,pady=9)
+            e=tk.Entry(win,width=45); e.insert(0,default); e.grid(row=i,column=1,padx=10,pady=9); fields.append(e)
+        fields[1].insert(0,datetime.now().strftime("%Y-%m-%d %H:%M"))
+        def save():
+            title,when,note=[e.get().strip() for e in fields]
+            try: datetime.strptime(when,"%Y-%m-%d %H:%M")
+            except ValueError: messagebox.showerror("Thời gian","Dùng YYYY-MM-DD HH:MM"); return
+            if not title:return
+            con=connect(); con.execute("INSERT INTO chat_reminders(title,remind_at,note,created_at) VALUES(?,?,?,?)",(title,when,note,now())); con.commit(); con.close(); win.destroy(); self._schedule_reminder(title,when,note); messagebox.showinfo("Đã đặt nhắc hẹn",f"{title}\n{when}")
+        self.button(win,"💾 Lưu nhắc hẹn",save,16,COLORS["pink"]).grid(row=3,column=0,columnspan=2,pady=12)
+        win.grab_set()
+
+    def _schedule_reminder(self,title,when,note=""):
+        try:
+            dt=datetime.strptime(when,"%Y-%m-%d %H:%M")
+            delay=max(1000,int((dt-datetime.now()).total_seconds()*1000))
+            self.after(delay,lambda:messagebox.showinfo("⏰ Nhắc hẹn giáo viên",title+(f"\n{note}" if note else "")))
+        except Exception: pass
+
+    def parent_team_view(self,kind):
+        s=self.current_student or {}; self.clear(); self.header("⭐ THÀNH TÍCH / ĐIỂM CỘNG CỦA TỔ" if kind=="scores" else "🧹 PHÂN CÔNG / NHIỆM VỤ CỦA TỔ","Chỉ xem dữ liệu của tổ của con")
+        con=connect(); cls=s.get("class_name",""); team=s.get("team","")
+        if kind=="scores":
+            rows=con.execute("SELECT st.name,sc.criterion,sc.points,sc.note,sc.created_at FROM scores sc JOIN students st ON st.id=sc.student_id WHERE st.class_name=? AND st.team=? ORDER BY sc.id DESC",(cls,team)).fetchall()
+            tr=self.tree(("name","criterion","points","note","created"),("Học sinh","Tiêu chí","Điểm","Ghi chú","Thời gian"),[200,240,80,340,160])
+            for r in rows: tr.insert("","end",values=(r["name"],r["criterion"],f"{r['points']:+d}",r["note"] or "",r["created_at"]))
+        else:
+            rows=con.execute("SELECT st.name,t.task_date,t.task,t.status,t.points,t.note FROM tasks t JOIN students st ON st.id=t.student_id WHERE st.class_name=? AND st.team=? ORDER BY t.id DESC",(cls,team)).fetchall()
+            tr=self.tree(("name","date","task","status","points","note"),("Học sinh","Ngày","Nhiệm vụ","Trạng thái","Điểm","Ghi chú"),[190,100,330,150,70,280])
+            for r in rows: tr.insert("","end",values=(r["name"],r["task_date"],r["task"],r["status"],f"{r['points']:+d}",r["note"] or ""))
+        con.close(); self.button(self,"💬 Chat với giáo viên",self.chat_center,18,COLORS["cyan"]).pack(pady=4); self.button(self,"Quay lại",self.student_home,15,"#7f8c8d").pack(pady=5)
+
+    def account_info(self):
+        s = self.current_student or {}
+        self.clear()
+        self.header("🔐 THÔNG TIN CỦA TÔI", "Chỉ hiển thị thông tin của chính tài khoản đang đăng nhập")
+        card=tk.Frame(self,bg="white",bd=1,relief="solid")
+        card.pack(pady=20,ipadx=35,ipady=25)
+        student_name=s.get("student_name", s.get("name", ""))
+        student_id=s.get("student_id", s.get("id", ""))
+        parent_email=s.get("parent_email_login", s.get("parent_email", ""))
+        parent_name=s.get("parent_name", "")
+        rows=[
+            ("Tài khoản học sinh", s.get("student_username", "")),
+            ("ID học sinh", str(student_id)),
+            ("Họ tên học sinh", student_name),
+            ("Lớp", s.get("class_name", "")),
+            ("Tổ", s.get("team", "")),
+            ("Giáo viên chủ nhiệm", s.get("homeroom_teacher", "")),
+            ("Tài khoản phụ huynh", parent_email),
+            ("Họ tên phụ huynh", parent_name),
+            ("Mật khẩu học sinh", s.get("student_password_display", "")),
+        ]
+        if s.get("parent_email_login"):
+            rows += [("Mật khẩu phụ huynh", s.get("parent_password_display", "")),
+                     ("Tài khoản con", s.get("student_username", "")),
+                     ("Mật khẩu con", s.get("student_password_display", ""))]
+        else:
+            rows += [("Chức vụ ban cán sự", s.get("officer_role", "Không có")),
+                     ("Quyền ban cán sự", s.get("officer_scope", "Không làm gì cả"))]
+        for i,(k,v) in enumerate(rows):
+            tk.Label(card,text=k+":",bg="white",font=("Arial",10,"bold"),anchor="e",width=24).grid(row=i,column=0,padx=8,pady=7,sticky="e")
+            tk.Label(card,text=v,bg="white",fg="#3155a6",anchor="w",width=42).grid(row=i,column=1,padx=8,pady=7,sticky="w")
+        self.button(self,"Quay lại hồ sơ",self.student_home,18,"#7f8c8d").pack(pady=10)
+
+    def teacher_profile_settings(self):
+        """Cài đặt tên và ảnh đại diện giáo viên; dữ liệu lưu bền trong SQLite."""
+        global TEACHER_NAME
+        con=connect(); row=con.execute("SELECT * FROM teacher WHERE id=1").fetchone(); con.close()
+        old_name=(row["display_name"] if row else "") or TEACHER_NAME
+        old_avatar=(row["avatar_path"] if row else "") or ""
+        win=tk.Toplevel(self); win.title("⚙ Hồ sơ giáo viên"); win.geometry("560x390"); win.configure(bg="white")
+        tk.Label(win,text="⚙ HỒ SƠ GIÁO VIÊN",bg="white",fg=COLORS["navy"],font=("Arial",18,"bold")).pack(pady=(20,10))
+        card=tk.Frame(win,bg="white"); card.pack(padx=25,pady=8)
+        tk.Label(card,text="Tên giáo viên chủ nhiệm:",bg="white",font=("Arial",10,"bold")).grid(row=0,column=0,padx=8,pady=10,sticky="e")
+        name_var=tk.StringVar(value=old_name); tk.Entry(card,textvariable=name_var,width=36).grid(row=0,column=1,padx=8,pady=10)
+        path_var=tk.StringVar(value=old_avatar)
+        tk.Label(card,text="Ảnh đại diện:",bg="white",font=("Arial",10,"bold")).grid(row=1,column=0,padx=8,pady=10,sticky="e")
+        path_entry=tk.Entry(card,textvariable=path_var,width=36); path_entry.grid(row=1,column=1,padx=8,pady=10)
+        def browse():
+            f=filedialog.askopenfilename(title="Chọn ảnh đại diện",filetypes=[("Ảnh","*.png *.jpg *.jpeg *.webp"),("Tất cả","*.*")])
+            if f: path_var.set(f)
+        self.button(card,"📷 Chọn ảnh",browse,15,COLORS["blue"]).grid(row=1,column=2,padx=6)
+        tk.Label(win,text="Ảnh sẽ được lưu theo đường dẫn trên máy này. Có thể để trống để dùng avatar mặc định.",bg="white",fg=COLORS["gray"],wraplength=500,justify="center").pack(pady=8)
+        def save():
+            global TEACHER_NAME
+            nm=name_var.get().strip() or TEACHER_NAME
+            av=path_var.get().strip()
+            con=connect(); con.execute("UPDATE teacher SET display_name=?,avatar_path=? WHERE id=1",(nm,av));
+            con.execute("UPDATE classes SET homeroom_teacher=? WHERE homeroom_teacher=?",(nm,old_name))
+            con.execute("UPDATE students SET homeroom_teacher=? WHERE homeroom_teacher=?",(nm,old_name))
+            con.execute("UPDATE parent_requests SET homeroom_teacher=? WHERE homeroom_teacher=?",(nm,old_name)); con.commit(); con.close()
+            TEACHER_NAME=nm; win.destroy(); messagebox.showinfo("Đã lưu","Đã cập nhật tên và ảnh đại diện giáo viên."); self.teacher_dashboard()
+        self.button(win,"💾 LƯU HỒ SƠ GIÁO VIÊN",save,28,COLORS["green"]).pack(pady=15)
+        self.button(win,"Đóng",win.destroy,12,"#7f8c8d").pack()
+
+    def import_students_excel(self):
+        if not OPENPYXL_OK:
+            messagebox.showerror("Thiếu thư viện", "Chưa có openpyxl. Hãy cài bằng: pip install openpyxl")
+            return
+        f=filedialog.askopenfilename(title="Tải danh sách học sinh từ Excel",filetypes=[("Excel","*.xlsx *.xlsm"), ("Tất cả","*.*")])
+        if not f: return
+        try:
+            wb=load_workbook(f,data_only=True); ws=wb.active
+            rows=list(ws.iter_rows(values_only=True))
+            if not rows: raise ValueError("File Excel không có dữ liệu.")
+
+            # Hỗ trợ bảng có tiêu đề nhiều dòng như mẫu danh sách trường:
+            # dòng 1-5 là tiêu đề hành chính, dòng 6 mới là hàng cột.
+            def norm_header(v):
+                if v is None: return ""
+                return " ".join(str(v).replace("\n"," ").split()).strip().lower()
+
+            aliases={
+                "họ tên học sinh":"name", "họ tên":"name", "tên học sinh":"name", "name":"name",
+                "lớp":"class_name", "lớp học":"class_name", "class":"class_name",
+                "tổ":"team", "tổ/nhóm":"team", "nhóm":"team", "team":"team",
+                "giáo viên chủ nhiệm":"homeroom_teacher", "gv chủ nhiệm":"homeroom_teacher", "gvcnh":"homeroom_teacher",
+                "phụ huynh":"parent_name", "họ tên phụ huynh":"parent_name",
+                "email phụ huynh":"parent_email", "email":"parent_email"
+            }
+
+            header_row=None; idx={}
+            # Tìm hàng chứa cột bắt buộc trong tối đa 20 dòng đầu.
+            for ri, rr in enumerate(rows[:20]):
+                test={aliases[norm_header(x)]:i for i,x in enumerate(rr) if norm_header(x) in aliases}
+                if "name" in test:
+                    header_row=ri; idx=test; break
+            if header_row is None or "name" not in idx:
+                raise ValueError("Không tìm thấy cột 'Họ tên học sinh'. Hãy kiểm tra hàng tiêu đề trong file Excel.")
+
+            # Nếu file không có cột Lớp, tự lấy tên lớp từ tiêu đề, ví dụ
+            # 'DANH SÁCH HỌC SINH LỚP 8/4'.
+            inferred_class=""
+            import re as _re
+            for rr in rows[:header_row]:
+                joined=" ".join(norm_header(x) for x in rr if x is not None)
+                m=_re.search(r"danh sách học sinh\s+lớp\s+(.+)$", joined, _re.I)
+                if m:
+                    inferred_class=m.group(1).strip().rstrip(".")
+                    break
+            if "class_name" not in idx and not inferred_class:
+                raise ValueError("Cần cột 'Lớp' hoặc tiêu đề file phải ghi tên lớp, ví dụ 'DANH SÁCH HỌC SINH LỚP 8/4'.")
+
+            added=0; skipped=0; con=connect()
+            for rr in rows[header_row+1:]:
+                def val(key, default=""):
+                    i=idx.get(key); return str(rr[i]).strip() if i is not None and i < len(rr) and rr[i] is not None else default
+                name=val("name"); cls=val("class_name", inferred_class); team=val("team",""); teacher=val("homeroom_teacher",TEACHER_NAME); parent=val("parent_name",""); email=val("parent_email","")
+                if not name or not cls: continue
+                if con.execute("SELECT 1 FROM students WHERE lower(name)=lower(?) AND class_name=?",(name,cls)).fetchone(): skipped+=1; continue
+                next_id=con.execute("SELECT COALESCE(MAX(id),0)+1 AS n FROM students").fetchone()["n"]
+                su=f"hs{int(next_id):04d}"; sp=secrets.token_hex(3); pu=f"ph{int(next_id):04d}"; pp=secrets.token_hex(3)
+                con.execute("INSERT INTO students(name,class_name,team,homeroom_teacher,parent_name,parent_email,group_name,status,access_code,student_username,student_password_hash,student_password_display,created_at,approved_at,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(name,cls,team,teacher,parent,email,"","approved",make_code(),su,hash_pw(sp),sp,now(),now(),now()))
+                sid=con.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                con.execute("INSERT OR REPLACE INTO parents(student_id,email,username,password_hash,password_display,must_change,verified) VALUES(?,?,?,?,?,?,1)",(sid,email,pu,hash_pw(pp),pp,0))
+                con.execute("INSERT OR IGNORE INTO classes(class_name,homeroom_teacher,group_name) VALUES(?,?,?)",(cls,teacher,f"Nhóm lớp {cls}"))
+                added+=1
+            con.commit(); con.close()
+            messagebox.showinfo("Nhập Excel thành công",f"Đã thêm {added} học sinh. Bỏ qua {skipped} học sinh trùng.")
+            self.manage_students()
+        except Exception as e:
+            try: con.close()
+            except Exception: pass
+            messagebox.showerror("Nhập Excel thất bại",str(e))
+
+    def export_students_excel(self):
+        if not OPENPYXL_OK:
+            messagebox.showerror("Thiếu thư viện", "Chưa có openpyxl. Hãy cài bằng: pip install openpyxl")
+            return
+        f=filedialog.asksaveasfilename(title="Xuất danh sách học sinh",defaultextension=".xlsx",filetypes=[("Excel","*.xlsx")],initialfile="Danh_sach_hoc_sinh.xlsx")
+        if not f:return
+        try:
+            con=connect(); rows=con.execute("SELECT s.*,p.username AS parent_username,p.password_display AS parent_password,p.verified AS parent_verified FROM students s LEFT JOIN parents p ON p.student_id=s.id ORDER BY s.class_name,s.team,s.name").fetchall(); con.close()
+            wb=Workbook(); ws=wb.active; ws.title="Danh sách học sinh"
+            headers=["STT","ID","Họ tên học sinh","Lớp","Tổ","Tên nhóm","Giáo viên chủ nhiệm","Phụ huynh","Email phụ huynh","Tài khoản học sinh","Mật khẩu học sinh","Tài khoản phụ huynh","Mật khẩu phụ huynh","Trạng thái HS","PH xác nhận"]
+            ws.append(headers)
+            for n,r in enumerate(rows,1):
+                ws.append([n,r["id"],r["name"],r["class_name"],r["team"],r["group_name"] or "",r["homeroom_teacher"],r["parent_name"],r["parent_email"],r["student_username"],r["student_password_display"],r["parent_username"] or "",r["parent_password"] or "",{"pending":"Chờ duyệt","approved":"Đã duyệt","verified":"Đã xác nhận"}.get(r["status"],r["status"]),"Đã xác nhận" if r["parent_verified"] else "Chưa xác nhận"])
+            ws.freeze_panes="A2"; ws.auto_filter.ref=ws.dimensions
+            for cell in ws[1]: cell.font=cell.font.copy(bold=True)
+            widths=[8,8,24,12,12,16,24,22,28,18,18,18,18,16,16]
+            for i,w in enumerate(widths,1): ws.column_dimensions[chr(64+i) if i<=26 else 'A'].width=w
+            wb.save(f); messagebox.showinfo("Đã xuất", f"Đã xuất đầy đủ danh sách và tài khoản vào:\n{f}")
+        except Exception as e: messagebox.showerror("Xuất Excel thất bại",str(e))
+
+    # -------------------- V8: ROSTER + SUMMARY --------------------

@@ -1,0 +1,19 @@
+FINAL26 static/native parity audit
+
+V18 function names: 138 unique
+Web function names: 259 unique
+V18 GUI/helper functions excluded from one-to-one name matching: 64
+V18 user-visible/semantic names after GUI-helper exclusion: 74
+Unmapped semantic names after route/mapping checks: 11
+
+_chat_group_allowed_for_current_user
+_chat_group_read_only
+_chat_identity
+_chat_liker_key
+_chat_load_contacts
+_chat_send_allowed
+drag_node
+regenerate
+save
+set_contact
+verify

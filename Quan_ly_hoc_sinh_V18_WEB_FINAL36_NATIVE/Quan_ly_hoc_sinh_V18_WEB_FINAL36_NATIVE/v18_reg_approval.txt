@@ -1,0 +1,496 @@
+    def student_register(self):
+        self.clear()
+        self.header(
+            "🎓 ĐĂNG KÝ HỌC SINH",
+            "Học sinh tự tạo tài khoản + mật khẩu → gửi giáo viên chủ nhiệm → chờ phê duyệt"
+        )
+
+        card = tk.Frame(self, bg="white", bd=1, relief="solid")
+        card.pack(pady=10, ipadx=35, ipady=20)
+
+        labels = [
+            "Họ tên học sinh",
+            "Tên đăng nhập học sinh",
+            "Mật khẩu học sinh",
+            "Lớp",
+            "Tổ",
+            "Giáo viên chủ nhiệm",
+            "Họ tên phụ huynh",
+            "Email phụ huynh",
+        ]
+        entries = []
+
+        for i, label in enumerate(labels):
+            tk.Label(card,text=label+":",bg="white",font=("Arial",10,"bold")).grid(
+                row=i,column=0,sticky="e",padx=10,pady=7
+            )
+            e=tk.Entry(card,width=42,show="*" if "Mật khẩu" in label else "")
+            e.grid(row=i,column=1,padx=10,pady=7)
+            entries.append(e)
+
+        entries[5].insert(0, TEACHER_NAME)
+
+        def submit():
+            values=[e.get().strip() for e in entries]
+            if not all(values):
+                messagebox.showwarning(
+                    "Thiếu thông tin",
+                    "Hãy nhập đầy đủ họ tên, tên đăng nhập, mật khẩu, lớp, tổ, "
+                    "giáo viên chủ nhiệm, họ tên phụ huynh và email."
+                )
+                return
+            if len(values[2]) < 6:
+                messagebox.showwarning("Mật khẩu","Mật khẩu học sinh phải có ít nhất 6 ký tự.")
+                return
+            if "@" not in values[7]:
+                messagebox.showwarning("Email","Email phụ huynh chưa hợp lệ.")
+                return
+
+            con=connect()
+            try:
+                exists=con.execute(
+                    "SELECT 1 FROM students WHERE lower(student_username)=lower(?) LIMIT 1",
+                    (values[1],)
+                ).fetchone()
+                if exists:
+                    messagebox.showwarning("Tên đăng nhập","Tên đăng nhập học sinh đã tồn tại.")
+                    return
+
+                con.execute("""
+                    INSERT INTO students(
+                        name,class_name,team,homeroom_teacher,
+                        parent_name,parent_email,
+                        student_username,student_password_hash,student_password_display,
+                        status,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,'pending',?)
+                """,(
+                    values[0],values[3],values[4],values[5],
+                    values[6],values[7],
+                    values[1],hash_pw(values[2]),values[2],now()
+                ))
+                con.commit()
+            except Exception as e:
+                con.rollback()
+                messagebox.showerror("Đăng ký thất bại",f"Không thể lưu hồ sơ học sinh.\n\n{e}")
+                return
+            finally:
+                con.close()
+
+            messagebox.showinfo(
+                "Đã gửi",
+                "Hồ sơ học sinh đã gửi giáo viên phê duyệt.\n"
+                "Tên đăng nhập và mật khẩu bạn vừa tạo sẽ được giữ nguyên sau khi được duyệt."
+            )
+            self.show_login()
+
+        self.button(card,"📨 GỬI GIÁO VIÊN PHÊ DUYỆT",submit,30,COLORS["green"]).grid(
+            row=len(labels),column=0,columnspan=2,pady=13
+        )
+        self.button(self,"Quay lại",self.show_login,15,"#7f8c8d").pack()
+
+    def teacher_qr_manager(self):
+        """Chỉ giáo viên mới có màn hình tạo/hiển thị QR."""
+        self.clear()
+        teacher_code=get_teacher_code()
+        self.header("▣ TẠO MÃ QR CHO PHỤ HUYNH",
+                     f"Chỉ giáo viên được xem QR. Giáo viên gửi QR cho học sinh/phụ huynh | Mã GV: {teacher_code}")
+
+        info=tk.Frame(self,bg="#eef5ff",bd=1,relief="solid")
+        info.pack(fill="x",padx=28,pady=(0,12))
+        tk.Label(info,text=f"🔐 MÃ GIÁO VIÊN: {teacher_code}",
+                 bg="#eef5ff",fg="#173f7a",font=("Arial",15,"bold")).pack(side="left",padx=16,pady=10)
+        self.button(info,"🔄 Đổi mã giáo viên",self.teacher_code_dialog,16,COLORS["purple"]).pack(side="right",padx=10,pady=6)
+
+        con=connect()
+        rows=con.execute("""
+            SELECT s.id,s.name,s.class_name,s.access_code,
+                   p.password_display,p.email
+            FROM students s
+            LEFT JOIN parents p ON p.student_id=s.id
+            WHERE s.status='approved'
+            ORDER BY s.class_name,s.name
+        """).fetchall()
+        con.close()
+
+        wrap=tk.Frame(self,bg="white",bd=1,relief="solid")
+        wrap.pack(fill="both",expand=True,padx=28,pady=8)
+        tk.Label(wrap,text="DANH SÁCH HỌC SINH ĐÃ ĐƯỢC DUYỆT",
+                 bg="white",fg=COLORS["navy"],font=("Arial",14,"bold")).pack(anchor="w",padx=14,pady=10)
+
+        tree_wrap=tk.Frame(wrap,bg="white"); tree_wrap.pack(fill="both",expand=True,padx=10,pady=5)
+        tr=ttk.Treeview(tree_wrap,columns=("id","name","class","code","parent"),show="headings",height=12)
+        vs=tk.Scrollbar(tree_wrap,orient="vertical",command=tr.yview); tr.configure(yscrollcommand=vs.set)
+        tr.pack(side="left",fill="both",expand=True); vs.pack(side="right",fill="y")
+        for col,title,w in [("id","ID",55),("name","Học sinh",220),("class","Lớp",100),
+                            ("code","Mã xác nhận",150),("parent","Tài khoản PH",260)]:
+            tr.heading(col,text=title); tr.column(col,width=w,anchor="center")
+        for r in rows:
+            tr.insert("", "end", iid=str(r["id"]),
+                      values=(r["id"],r["name"],r["class_name"],r["access_code"] or "Chưa có",
+                              r["email"] or "Chưa cấp tài khoản"))
+
+        def create_selected_qr():
+            sel=tr.selection()
+            if not sel:
+                messagebox.showwarning("Tạo QR","Hãy chọn học sinh đã được duyệt.")
+                return
+            sid=int(sel[0])
+            con2=connect()
+            st=con2.execute("SELECT * FROM students WHERE id=?",(sid,)).fetchone()
+            par=con2.execute("SELECT * FROM parents WHERE student_id=?",(sid,)).fetchone()
+            con2.close()
+            if not st:
+                messagebox.showerror("Tạo QR","Không tìm thấy học sinh."); return
+            if not st["access_code"]:
+                messagebox.showwarning("Tạo QR","Học sinh này chưa có mã xác nhận. Hãy xác nhận phụ huynh trước.")
+                return
+            if not par or not par["password_display"]:
+                messagebox.showwarning("Tạo QR","Học sinh này chưa có mật khẩu phụ huynh. Hãy xác nhận phụ huynh trước.")
+                return
+            self.show_teacher_qr_window(dict(st),dict(par),teacher_code)
+
+        # Thanh thao tác cố định ở đáy màn hình, không bị bảng học sinh đẩy xuống
+        # hoặc khuất bởi thanh taskbar trên màn hình thấp.
+        actions=tk.Frame(self,bg=COLORS["bg"])
+        actions.pack(side="bottom",fill="x",padx=20,pady=(5,10))
+        self.button(actions,"▣ TẠO / HIỆN QR CHO HỌC SINH ĐÃ CHỌN",
+                     create_selected_qr,34,COLORS["purple"]).pack(side="left",padx=6,ipady=2)
+        self.button(actions,"↩ Quay lại",self.teacher_dashboard,14,"#7f8c8d").pack(side="right",padx=6,ipady=2)
+
+    def show_teacher_qr_window(self,student,parent,teacher_code):
+        win=tk.Toplevel(self)
+        win.title("▣ QR xác nhận phụ huynh — chỉ giáo viên")
+        win.geometry("760x900")
+        win.minsize(620,700)
+        win.configure(bg="white")
+
+        # Khung cuộn để toàn bộ nội dung luôn xem được trên màn hình nhỏ.
+        outer=tk.Frame(win,bg="white"); outer.pack(fill="both",expand=True)
+        canvas=tk.Canvas(outer,bg="white",highlightthickness=0)
+        bar=tk.Scrollbar(outer,orient="vertical",command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side="left",fill="both",expand=True)
+        bar.pack(side="right",fill="y")
+        body=tk.Frame(canvas,bg="white")
+        body_id=canvas.create_window((0,0),window=body,anchor="nw")
+        body.bind("<Configure>",lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",lambda e: canvas.itemconfigure(body_id,width=e.width))
+
+        tk.Label(body,text="▣ QR XÁC NHẬN PHỤ HUYNH",
+                 bg="white",fg=COLORS["navy"],font=("Arial",20,"bold")).pack(pady=(16,6))
+        tk.Label(body,text=f"Học sinh: {student['name']}  •  Lớp: {student['class_name']}",
+                 bg="white",fg="#444",font=("Arial",11,"bold"),wraplength=650,
+                 justify="center").pack(pady=4)
+
+        box=tk.Frame(body,bg="#f6f9ff",bd=1,relief="solid")
+        box.pack(fill="x",padx=30,pady=10)
+        for title,val,col in [
+            ("MÃ GIÁO VIÊN",teacher_code,"#173f7a"),
+            ("MÃ XÁC NHẬN HỌC SINH",student["access_code"],"#bd2727"),
+            ("MẬT KHẨU PHỤ HUYNH — CHỈ GIÁO VIÊN XEM",parent["password_display"],"#7a4600")
+        ]:
+            tk.Label(box,text=title,bg="#f6f9ff",fg="#555",
+                     font=("Arial",9,"bold")).pack(pady=(9,0))
+            tk.Label(box,text=str(val),bg="#f6f9ff",fg=col,
+                     font=("Arial",20,"bold"),wraplength=620,
+                     justify="center").pack(pady=(1,9),padx=12)
+
+        payload=(f"XAC_NHAN_PHU_HUYNH\\nMa giao vien: {teacher_code}\\n"
+                 f"Ma xac nhan: {student['access_code']}\\n"
+                 f"Mat khau phu huynh: {parent['password_display']}\\n"
+                 "Chi dung thong tin nay de dang nhap tai khoan phu huynh.")
+        qr_file=os.path.join(BASE_DIR,f"QR_phu_huynh_{student['id']}.png")
+
+        if QR_OK:
+            image=qrcode.make(payload)
+            image.save(qr_file)
+
+            # Không resize bằng nội suy mờ; giữ QR nguyên nét và chỉ giới hạn
+            # kích thước hiển thị bằng thumbnail NEAREST nếu cần.
+            try:
+                from PIL import ImageTk, Image
+                qr_img=image.convert("RGB")
+                max_side=360
+                if max(qr_img.size)>max_side:
+                    qr_img=qr_img.resize((max_side,max_side),Image.Resampling.NEAREST)
+                photo=ImageTk.PhotoImage(qr_img)
+                lab=tk.Label(body,image=photo,bg="white")
+                lab.image=photo
+                lab.pack(pady=8)
+            except Exception:
+                tk.Label(body,text=f"QR đã lưu tại:\n{qr_file}",
+                         bg="white",fg="#666").pack(pady=25)
+
+            tk.Label(body,
+                     text="⚠ QR CHỈ HIỂN THỊ CHO GIÁO VIÊN\\n"
+                          "Giáo viên gửi QR cho học sinh. Phụ huynh dùng điện thoại quét QR "
+                          "để xem thông tin xác nhận và mật khẩu.",
+                     bg="#fff8e8",fg="#7a4600",font=("Arial",10,"bold"),
+                     wraplength=650,justify="center",bd=1,relief="solid",
+                     padx=12,pady=10).pack(fill="x",padx=30,pady=8)
+
+            def copy_path():
+                self.clipboard_clear()
+                self.clipboard_append(qr_file)
+                self.update()
+                messagebox.showinfo("QR","Đã sao chép đường dẫn tệp QR.")
+
+            self.button(body,"📋 SAO CHÉP ĐƯỜNG DẪN QR",copy_path,18,COLORS["blue"]).pack(pady=5)
+            self.button(body,"🔄 TẠO LẠI QR",
+                        lambda:self._regenerate_parent_qr(win,student,teacher_code,student["access_code"]),
+                        16,COLORS["purple"]).pack(pady=5)
+        else:
+            tk.Label(body,
+                     text="Máy chưa có thư viện qrcode. Cài qrcode[pil] để tạo QR.",
+                     bg="white",fg="#bd2727",font=("Arial",11,"bold"),
+                     wraplength=620,justify="center").pack(pady=30)
+
+        self.button(body,"Đóng",win.destroy,14,"#7f8c8d").pack(pady=(8,18))
+        canvas.bind_all("<MouseWheel>",lambda e: canvas.yview_scroll(int(-e.delta/120),"units"))
+        win.protocol("WM_DELETE_WINDOW",lambda:(canvas.unbind_all("<MouseWheel>"),win.destroy()))
+
+    def pending_parents(self):
+        self.clear()
+        teacher_code=get_teacher_code()
+        self.header(
+            "👨‍👩‍👧 XÁC NHẬN PHỤ HUYNH",
+            f"Giáo viên kiểm tra → xác nhận phụ huynh → tạo mã + QR | Mã giáo viên: {teacher_code}"
+        )
+        info=tk.Frame(self,bg="#eef5ff",bd=1,relief="solid")
+        info.pack(fill="x",padx=28,pady=(0,10))
+        tk.Label(info,text=f"🔐 MÃ XÁC NHẬN CỦA GIÁO VIÊN:  {teacher_code}",
+                 bg="#eef5ff",fg="#173f7a",font=("Arial",15,"bold")).pack(side="left",padx=16,pady=10)
+        self.button(info,"🔄 Tạo mã giáo viên mới",self.teacher_code_dialog,24,COLORS["purple"]).pack(side="right",padx=10,pady=6)
+
+        con=connect()
+        rows=con.execute("SELECT * FROM parent_requests WHERE status='pending' ORDER BY id DESC").fetchall()
+        con.close()
+        tr=self.tree(
+            ("id","parent","email","child","class","team","teacher"),
+            ("ID","Tên phụ huynh","Email","Tên con","Lớp","Tổ","Giáo viên chủ nhiệm"),
+            [55,180,250,180,90,70,220]
+        )
+        for r in rows:
+            tr.insert("", "end", values=(r["id"],r["parent_name"],r["parent_email"],r["student_name"],r["class_name"],r["team"],r["homeroom_teacher"]))
+
+        def delete_request_and_accounts():
+            sel=tr.selection()
+            if not sel:
+                messagebox.showwarning("Chọn","Hãy chọn yêu cầu phụ huynh cần xóa.")
+                return
+            rid=int(tr.item(sel[0])["values"][0])
+            con2=connect()
+            try:
+                req=con2.execute("SELECT * FROM parent_requests WHERE id=?",(rid,)).fetchone()
+                if not req:
+                    messagebox.showerror("Lỗi","Không tìm thấy yêu cầu.")
+                    return
+
+                # Tìm học sinh theo tên + lớp, sau đó xóa cả tài khoản HS và PH.
+                student=con2.execute(
+                    "SELECT id,name FROM students WHERE name=? AND class_name=? ORDER BY id DESC LIMIT 1",
+                    (req["student_name"],req["class_name"])
+                ).fetchone()
+
+                confirm=messagebox.askyesno(
+                    "⚠ XÓA CẢ HỌC SINH + PHỤ HUYNH",
+                    f"Xóa yêu cầu của phụ huynh {req['parent_name']} và học sinh {req['student_name']}?\n\n"
+                    "Hệ thống sẽ xóa cả tài khoản học sinh, tài khoản phụ huynh và yêu cầu xác nhận liên quan."
+                )
+                if not confirm:
+                    return
+
+                # Xóa dữ liệu liên quan trước để tránh tài khoản mồ côi.
+                if student:
+                    sid=student["id"]
+                    for table in ("parents","class_officers"):
+                        try:
+                            con2.execute(f"DELETE FROM {table} WHERE student_id=?",(sid,))
+                        except sqlite3.OperationalError:
+                            pass
+                    for table in ("scores","task_completions"):
+                        try:
+                            con2.execute(f"DELETE FROM {table} WHERE student_id=?",(sid,))
+                        except sqlite3.OperationalError:
+                            pass
+                    try:
+                        con2.execute("DELETE FROM students WHERE id=?",(sid,))
+                    except sqlite3.OperationalError:
+                        pass
+
+                con2.execute("DELETE FROM parent_requests WHERE id=?",(rid,))
+                con2.commit()
+                messagebox.showinfo("Đã xóa","Đã xóa cả hồ sơ và tài khoản học sinh/phụ huynh liên quan.")
+            except Exception as exc:
+                con2.rollback()
+                messagebox.showerror("Lỗi xóa",f"Không thể xóa hồ sơ:\n{exc}")
+            finally:
+                con2.close()
+
+            self.pending_parents()
+
+        def approve():
+            sel=tr.selection()
+            if not sel:
+                messagebox.showwarning("Chọn","Hãy chọn yêu cầu phụ huynh."); return
+            rid=tr.item(sel[0])["values"][0]
+            con2=connect()
+            req=con2.execute("SELECT * FROM parent_requests WHERE id=?",(rid,)).fetchone()
+            student=con2.execute(
+                "SELECT * FROM students WHERE name=? AND class_name=? ORDER BY id DESC LIMIT 1",
+                (req["student_name"],req["class_name"])
+            ).fetchone()
+            if not student:
+                con2.close()
+                messagebox.showerror("Không tìm thấy","Không tìm thấy học sinh khớp tên và lớp. Giáo viên hãy kiểm tra lại.")
+                return
+            access_code=student["access_code"] or make_code()
+            if student["status"] != "approved":
+                con2.execute("UPDATE students SET status='approved',access_code=?,approved_at=? WHERE id=?",
+                             (access_code,now(),student["id"]))
+            parent_username=req["parent_username"] or req["parent_email"]
+            parent_password_hash=req["parent_password_hash"]
+            parent_password_display=req["parent_password_display"]
+            if not parent_password_hash:
+                con2.close()
+                messagebox.showerror(
+                    "Thiếu tài khoản phụ huynh",
+                    "Phụ huynh chưa đăng ký tên đăng nhập và mật khẩu.\n"
+                    "Yêu cầu này không thể cấp tài khoản."
+                )
+                return
+
+            con2.execute(
+                """INSERT OR REPLACE INTO parents(
+                    student_id,email,username,password_hash,password_display,must_change,verified
+                ) VALUES(?,?,?,?,?,?,0)""",
+                (student["id"],req["parent_email"],parent_username,parent_password_hash,parent_password_display,0)
+            )
+            parent_temp=parent_password_display
+            con2.execute("UPDATE parent_requests SET status='approved',approved_at=? WHERE id=?",(now(),rid))
+            con2.commit()
+            student2=con2.execute("SELECT * FROM students WHERE id=?",(student["id"],)).fetchone()
+            con2.close()
+            self.show_parent_confirmation_package(dict(student2),req["parent_name"],req["parent_email"],parent_temp,teacher_code,access_code)
+            self.pending_parents()
+
+        # Thanh nút cố định ở đáy: luôn nhìn thấy dù bảng dữ liệu chiếm toàn màn hình.
+        actions=tk.Frame(self,bg=COLORS["bg"])
+        actions.pack(side="bottom",fill="x",padx=20,pady=(5,10))
+        self.button(actions,"✅ XÁC NHẬN PHỤ HUYNH + CẤP MK + TẠO QR",
+                     approve,48,COLORS["green"]).pack(side="left",padx=6,ipady=2)
+        self.button(actions,"🗑 XÓA CẢ HS + PH",
+                     delete_request_and_accounts,22,COLORS["red"]).pack(side="left",padx=6,ipady=2)
+        self.button(actions,"Quay lại",self.teacher_dashboard,15,"#7f8c8d").pack(side="right",padx=6,ipady=2)
+
+    def teacher_code_dialog(self):
+        win=tk.Toplevel(self); win.title("Mã xác nhận của giáo viên"); win.geometry("560x300"); win.configure(bg="white")
+        code=get_teacher_code()
+        tk.Label(win,text="🔐 MÃ GIÁO VIÊN",bg="white",fg=COLORS["navy"],font=("Arial",18,"bold")).pack(pady=(24,8))
+        tk.Label(win,text=code,bg="white",fg="#bd2727",font=("Arial",30,"bold")).pack(pady=5)
+        tk.Label(win,text="Mã này được dùng kèm mã học sinh trong gói xác nhận phụ huynh và QR.",
+                 bg="white",fg="#555",font=("Arial",10),wraplength=480,justify="center").pack(pady=8)
+        def regenerate():
+            new_code=make_teacher_code()
+            con=connect(); con.execute("UPDATE teacher SET verification_code=? WHERE id=1",(new_code,)); con.commit(); con.close()
+            messagebox.showinfo("Đã tạo mã",f"Mã giáo viên mới: {new_code}\n\nQR tạo sau thời điểm này sẽ dùng mã mới.")
+            win.destroy(); self.pending_parents()
+        self.button(win,"🔄 Tạo mã giáo viên mới",regenerate,16,COLORS["purple"]).pack(pady=7)
+        self.button(win,"Đóng",win.destroy,13,"#7f8c8d").pack(pady=5)
+
+    def show_parent_confirmation_package(self,student,parent_name,parent_email,parent_temp,teacher_code,access_code):
+        win=tk.Toplevel(self)
+        win.title("Gói xác nhận phụ huynh — chỉ giáo viên")
+        win.geometry("760x920")
+        win.minsize(620,700)
+        win.configure(bg="white")
+
+        outer=tk.Frame(win,bg="white"); outer.pack(fill="both",expand=True)
+        canvas=tk.Canvas(outer,bg="white",highlightthickness=0)
+        bar=tk.Scrollbar(outer,orient="vertical",command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side="left",fill="both",expand=True)
+        bar.pack(side="right",fill="y")
+        body=tk.Frame(canvas,bg="white")
+        body_id=canvas.create_window((0,0),window=body,anchor="nw")
+        body.bind("<Configure>",lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",lambda e: canvas.itemconfigure(body_id,width=e.width))
+
+        tk.Label(body,text="✅ ĐÃ XÁC NHẬN PHỤ HUYNH",
+                 bg="white",fg="#17854a",font=("Arial",20,"bold")).pack(pady=(15,8))
+        tk.Label(body,
+                 text=f"Phụ huynh: {parent_name}\\nEmail: {parent_email}\\n"
+                      f"Học sinh: {student['name']}  •  Lớp: {student['class_name']}",
+                 bg="white",font=("Arial",11),justify="center",
+                 wraplength=650).pack(pady=6)
+
+        box=tk.Frame(body,bg="#f6f9ff",bd=1,relief="solid")
+        box.pack(fill="x",padx=28,pady=10)
+        for title,val,col in [
+            ("MÃ GIÁO VIÊN",teacher_code,"#173f7a"),
+            ("MÃ XÁC NHẬN HỌC SINH",access_code,"#bd2727"),
+            ("MẬT KHẨU PHỤ HUYNH — CHỈ GIÁO VIÊN XEM",parent_temp,"#7a4600")
+        ]:
+            tk.Label(box,text=title,bg="#f6f9ff",fg="#555",
+                     font=("Arial",9,"bold")).pack(pady=(10,0))
+            tk.Label(box,text=str(val),bg="#f6f9ff",fg=col,
+                     font=("Arial",20,"bold"),wraplength=620,
+                     justify="center").pack(pady=(1,10),padx=12)
+
+        payload=("XAC_NHAN_PHU_HUYNH\\n"
+                 f"Ma giao vien: {teacher_code}\\n"
+                 f"Ma xac nhan: {access_code}\\n"
+                 f"Mat khau phu huynh: {parent_temp or 'Chưa có tài khoản PH'}\\n"
+                 "Chi dung thong tin nay de dang nhap tai khoan phu huynh.")
+        qr_file=os.path.join(BASE_DIR,f"QR_phu_huynh_{student['id']}.png")
+
+        if QR_OK:
+            image=qrcode.make(payload)
+            image.save(qr_file)
+            try:
+                from PIL import ImageTk, Image
+                qr_img=image.convert("RGB")
+                max_side=360
+                if max(qr_img.size)>max_side:
+                    qr_img=qr_img.resize((max_side,max_side),Image.Resampling.NEAREST)
+                photo=ImageTk.PhotoImage(qr_img)
+                lab=tk.Label(body,image=photo,bg="white")
+                lab.image=photo
+                lab.pack(pady=8)
+            except Exception:
+                tk.Label(body,text=f"QR đã tạo tại:\n{qr_file}",
+                         bg="white",fg="#666").pack(pady=20)
+
+            tk.Label(body,
+                     text="📱 GIÁO VIÊN GỬI QR CHO HỌC SINH / PHỤ HUYNH\\n"
+                          "Phụ huynh dùng điện thoại quét QR. Tài khoản học sinh "
+                          "không hiển thị mật khẩu phụ huynh.",
+                     bg="#fff8e8",fg="#7a4600",font=("Arial",10,"bold"),
+                     wraplength=650,justify="center",bd=1,relief="solid",
+                     padx=12,pady=10).pack(fill="x",padx=28,pady=8)
+            tk.Label(body,text=f"QR đã lưu: {qr_file}",bg="white",fg="#555",
+                     font=("Arial",9),wraplength=650,justify="center").pack(pady=3)
+        else:
+            tk.Label(body,
+                     text="Chưa tạo được QR vì máy chưa có thư viện qrcode.\\n"
+                          "Mã giáo viên + mã xác nhận học sinh vẫn dùng được.",
+                     bg="white",fg="#9a5b00",justify="center",
+                     wraplength=650).pack(pady=25)
+
+        tk.Label(body,
+                 text="Mật khẩu phụ huynh ở trên CHỈ dành cho giáo viên.\\n"
+                      "Giáo viên gửi QR; phụ huynh quét QR bằng điện thoại để nhận thông tin cần thiết.",
+                 bg="white",fg="#333",font=("Arial",10,"bold"),
+                 justify="center",wraplength=650).pack(pady=10)
+
+        if QR_OK:
+            self.button(body,"📋 SAO CHÉP ĐƯỜNG DẪN QR",
+                        lambda:self._copy_qr_path(qr_file),18,COLORS["blue"]).pack(pady=5)
+            self.button(body,"🔄 TẠO LẠI QR",
+                        lambda:self._regenerate_parent_qr(win,student,teacher_code,access_code),
+                        18,COLORS["purple"]).pack(pady=5)
+        self.button(body,"Đóng",win.destroy,14,"#7f8c8d").pack(pady=(7,18))
+
+        canvas.bind_all("<MouseWheel>",lambda e: canvas.yview_scroll(int(-e.delta/120),"units"))
+        win.protocol("WM_DELETE_WINDOW",lambda:(canvas.unbind_all("<MouseWheel>"),win.destroy()))
+

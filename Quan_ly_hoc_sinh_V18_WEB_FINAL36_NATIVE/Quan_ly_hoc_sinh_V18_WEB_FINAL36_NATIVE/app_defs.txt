@@ -1,0 +1,120 @@
+1467:def edit_score_web(score_id):
+1481:def task_status_web(task_id):
+1494:def edit_task_page(task_id):
+1501:def officer_scope_web(student_id):
+1512:def teacher_dashboard_data():
+1524:def feature_audit():
+1534:def teacher_login_alias():
+1538:def student_login_alias():
+1542:def officer_login_alias():
+1546:def parent_login_alias():
+1551:def manage_students_alias():
+1556:def manage_classes_alias():
+1561:def manage_accounts_alias():
+1566:def score_manager_alias():
+1571:def task_manager_alias():
+1576:def manage_officers_alias():
+1581:def summary_manager_alias():
+1586:def chat_center_alias():
+1591:def diagram_view_alias():
+1595:def parent_register_alias():
+1599:def student_register_alias():
+1604:def account_info_alias():
+1609:def teacher_profile_alias():
+1616:def teacher_qr_code_alias():
+1621:def student_qr_alias(sid):
+1626:def student_confirmation_alias(sid):
+1631:def chat_upload_alias(filename):
+1640:def v18_route_manifest():
+1657:def teacher_dashboard_alias():
+1662:def student_home_alias():
+1667:def parent_home_alias():
+1674:def officer_view_alias():
+1681:def pending_students_alias():
+1686:def pending_parents_alias():
+1691:def teacher_profile_settings_alias():
+1696:def teacher_qr_manager_alias():
+1701:def chat_private_picker_alias():
+1706:def chat_quick_picker_alias():
+1711:def chat_reminder_dialog_alias():
+1716:def account_info_web_alias():
+1724:def import_students_excel_v18():
+1729:def export_students_excel_v18():
+1734:def add_student_roster_v18():
+1739:def save_score_v18():
+1744:def save_task_v18():
+1749:def approve_v18(sid):
+1754:def assign_v18():
+1759:def get_students_v18():
+1764:def delete_one_student_v18(sid):
+1769:def delete_selected_v18(sid):
+1774:def delete_parent_v18(sid):
+1779:def delete_request_and_accounts_v18(rid):
+1784:def delete_all_data_v18():
+1791:def rename_class_v18(cid):
+1796:def edit_class_teacher_v18(cid):
+1801:def edit_group_name_v18(cid):
+1806:def edit_group_avatar_v18(cid):
+1811:def complete_first_login_profile_v18():
+1820:def student_account_login_v18():
+1824:def parent_account_login_v18():
+1828:def parent_register_v18():
+1833:def parent_verify_code_v18():
+1837:def student_register_v18():
+1842:def student_verify_code_v18():
+1847:def account_info_v18():
+1851:def teacher_login_v18():
+1856:def teacher_dashboard_v18():
+1861:def manage_students_v18():
+1866:def manage_classes_v18():
+1871:def manage_officers_v18():
+1876:def score_manager_v18():
+1881:def task_manager_v18():
+1886:def summary_manager_v18():
+1891:def chat_center_v18():
+1896:def chat_private_picker_v18():
+1901:def chat_quick_picker_v18():
+1906:def chat_reminder_dialog_v18():
+1911:def send_message_v18():
+1916:def like_message_v18(mid):
+1921:def get_teacher_code_v18():
+1926:def make_teacher_code_v18():
+1931:def reset_parent_v18(sid):
+1938:def regenerate_student_account_v18(sid):
+1943:def officer_view_v18():
+1948:def parent_team_view_v18():
+1953:def student_home_v18():
+1958:def ranking_v18():
+1963:def diagram_view_v18():
+1968:def create_selected_qr_v18(sid):
+1973:def teacher_qr_manager_v18():
+1978:def manage_accounts_v18():
+1983:def chat_reminder_dialog_screen_v18():
+2012:def v18_parity_detail():
+2016:def account_info(): return redirect(url_for('my_account'))
+2017:def manage_accounts(): return redirect(url_for('accounts'))
+2018:def manage_classes(): return redirect(url_for('classes_page'))
+2019:def manage_students(): return redirect(url_for('students_page'))
+2020:def manage_officers(): return redirect(url_for('officers_page'))
+2021:def score_manager(): return redirect(url_for('scores_page'))
+2022:def task_manager(): return redirect(url_for('tasks_page'))
+2023:def summary_manager(): return redirect(url_for('summary'))
+2024:def chat_center(): return redirect(url_for('chat'))
+2025:def diagram_view(): return redirect(url_for('diagram'))
+2026:def teacher_dashboard(): return redirect(url_for('dashboard'))
+2027:def student_role(): return redirect(url_for('role_entry', role='student'))
+2028:def parent_role(): return redirect(url_for('role_entry', role='parent'))
+2029:def officer_view(): return redirect(url_for('officer_team_view'))
+2030:def student_account_login(): return redirect(url_for('role_entry', role='student'))
+2031:def parent_login(): return redirect(url_for('role_entry', role='parent'))
+2032:def teacher_login(): return redirect(url_for('role_entry', role='teacher'))
+2033:def import_students_excel(): return redirect(url_for('import_excel'))
+2034:def export_students_excel(): return redirect(url_for('export_excel'))
+2045:def transfer_student_form_web(sid):
+2052:def approve_student_with_code_web(sid):
+2063:def verify_parent_with_code_web(sid):
+2073:def scores_bulk_delete_web():
+2083:def tasks_bulk_delete_web():
+2093:def remove_officer_final27(student_id):
+2098:def chat_quick_create_final27():
+2107:def student_overview_api_final27(sid):

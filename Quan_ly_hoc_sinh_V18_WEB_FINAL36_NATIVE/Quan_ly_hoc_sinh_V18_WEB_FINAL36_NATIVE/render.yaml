@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: quan-ly-hoc-sinh-native
+    env: docker
+    autoDeploy: true
+    healthCheckPath: /healthz
+    disk:
+      name: v18-data
+      mountPath: /var/data
+      sizeGB: 1

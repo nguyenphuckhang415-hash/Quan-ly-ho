@@ -1,0 +1,632 @@
+    c.close(); return render_template('my_data.html',student=st,scores=scores,tasks=tasks,summaries=summaries)
+
+@app.route('/my-team/<kind>')
+@login_required
+def my_team(kind):
+    u=current_user()
+    if kind not in ('scores','tasks') or u.get('role') not in ('student','parent','officer'):
+        return redirect(url_for('dashboard'))
+    c=db(); st=get_student_for_session(c)
+    if not st: c.close(); return redirect(url_for('dashboard'))
+    scope_row=c.execute('SELECT role,scope FROM class_officers WHERE student_id=?',(st['id'],)).fetchone()
+    scope=(scope_row['scope'] if scope_row and scope_row['scope'] else 'Tổ của mình')
+    if scope=='Tất cả các tổ': filter_sql='s.class_name=?'; args=(st['class_name'],)
+    else: filter_sql='s.class_name=? AND s.team=?'; args=(st['class_name'],st['team'])
+    if kind=='scores':
+        rows=c.execute(f'SELECT s.name,s.team,sc.criterion,sc.points,sc.note,sc.created_at FROM scores sc JOIN students s ON s.id=sc.student_id WHERE {filter_sql} ORDER BY s.team,s.name,sc.id DESC',args).fetchall()
+    else:
+        rows=c.execute(f'SELECT s.name,s.team,t.task_date,t.task,t.status,t.points,t.note FROM tasks t JOIN students s ON s.id=t.student_id WHERE {filter_sql} ORDER BY s.team,s.name,t.id DESC',args).fetchall()
+    c.close(); return render_template('officer_data.html',kind=kind,scope=scope,student=st,rows=rows)
+
+# ---------- Teacher management ----------
+@app.route('/classes')
+@teacher_required
+def classes_page():
+    c=db(); rows=c.execute('SELECT * FROM classes ORDER BY class_name').fetchall(); c.close(); return render_template('table_page.html',title='QUẢN LÝ LỚP / TỔ NHÓM',rows=rows,kind='classes')
+
+@app.route('/classes/save',methods=['POST'])
+@teacher_required
+def save_class():
+    c=db(); name=request.form['class_name'].strip(); teacher=request.form.get('homeroom_teacher',TEACHER_NAME).strip() or TEACHER_NAME; group=request.form.get('group_name','').strip() or f'Nhóm lớp {name}'
+    try: c.execute('INSERT INTO classes(class_name,homeroom_teacher,group_name) VALUES(?,?,?)',(name,teacher,group)); c.commit(); flash('Đã thêm lớp.','success')
+    except sqlite3.IntegrityError: flash('Tên lớp đã tồn tại.','error')
+    c.close(); return redirect(url_for('classes_page'))
+
+@app.route('/classes/<int:cid>/edit',methods=['POST'])
+@teacher_required
+def edit_class(cid):
+    new=request.form['class_name'].strip(); group=request.form.get('group_name','').strip(); teacher=request.form.get('homeroom_teacher',TEACHER_NAME).strip()
+    c=db(); old=c.execute('SELECT class_name FROM classes WHERE id=?',(cid,)).fetchone();
+    if not old: c.close(); abort(404)
+    try:
+        c.execute('UPDATE classes SET class_name=?,homeroom_teacher=?,group_name=? WHERE id=?',(new,teacher,group,cid)); c.execute('UPDATE students SET class_name=?,homeroom_teacher=?,group_name=? WHERE class_name=?',(new,teacher,group,old['class_name'])); c.execute('UPDATE parent_requests SET class_name=?,homeroom_teacher=?,team=team WHERE class_name=?',(new,teacher,old['class_name'])); c.commit(); flash('Đã cập nhật lớp; dữ liệu GV sửa là dữ liệu hiện hành.','success')
+    except sqlite3.IntegrityError: flash('Tên lớp mới đã tồn tại.','error')
+    c.close(); return redirect(url_for('classes_page'))
+
+@app.route('/pending/students')
+@teacher_required
+def pending_students():
+    c=db(); rows=c.execute("SELECT * FROM students WHERE status='pending' ORDER BY id DESC").fetchall(); c.close(); return render_template('table_page.html',title='HỒ SƠ CHỜ DUYỆT',rows=rows,kind='pending_students')
+
+@app.route('/pending/students/<int:sid>/approve',methods=['POST'])
+@teacher_required
+def approve_student(sid):
+    c=db(); st=c.execute('SELECT * FROM students WHERE id=?',(sid,)).fetchone();
+    if not st: c.close(); abort(404)
+    code=st['access_code'] or make_code(); c.execute("UPDATE students SET status='approved',access_code=?,approved_at=? WHERE id=?",(code,now(),sid));
+    req=c.execute("SELECT * FROM parent_requests WHERE student_name=? AND class_name=? AND status='pending' ORDER BY id DESC LIMIT 1",(st['name'],st['class_name'])).fetchone()
+    if req:
+        c.execute('INSERT OR REPLACE INTO parents(student_id,email,username,password_hash,password_display,must_change,verified) VALUES(?,?,?,?,?,?,0)',(sid,req['parent_email'],req['parent_username'] or req['parent_email'],req['parent_password_hash'],req['parent_password_display'],0))
+        c.execute('UPDATE parent_requests SET status="approved",approved_at=? WHERE id=?',(now(),req['id']))
+    c.commit(); c.close(); flash(f'Đã duyệt {st["name"]}. Mã xác nhận: {code}.','success'); return redirect(url_for('pending_students'))
+
+@app.route('/pending/students/<int:sid>/delete',methods=['POST'])
+@teacher_required
+def delete_pending_student(sid):
+    c=db(); c.execute('DELETE FROM students WHERE id=?',(sid,)); c.commit(); c.close(); flash('Đã xóa hồ sơ học sinh và dữ liệu liên quan.','success'); return redirect(url_for('pending_students'))
+
+@app.route('/pending/parents')
+@teacher_required
+def pending_parents():
+    c=db(); rows=c.execute("SELECT * FROM parent_requests WHERE status='pending' ORDER BY id DESC").fetchall(); c.close(); return render_template('table_page.html',title='XÁC NHẬN PHỤ HUYNH',rows=rows,kind='pending_parents')
+
+@app.route('/pending/parents/<int:rid>/approve',methods=['POST'])
+@teacher_required
+def approve_parent(rid):
+    c=db(); req=c.execute('SELECT * FROM parent_requests WHERE id=?',(rid,)).fetchone();
+    if not req: c.close(); abort(404)
+    st=c.execute('SELECT * FROM students WHERE name=? AND class_name=? ORDER BY id DESC LIMIT 1',(req['student_name'],req['class_name'])).fetchone()
+    if not st: c.close(); flash('Không tìm thấy học sinh tương ứng.','error'); return redirect(url_for('pending_parents'))
+    c.execute('INSERT OR REPLACE INTO parents(student_id,email,username,password_hash,password_display,must_change,verified) VALUES(?,?,?,?,?,?,0)',(st['id'],req['parent_email'],req['parent_username'] or req['parent_email'],req['parent_password_hash'],req['parent_password_display'],0))
+    c.execute('UPDATE parent_requests SET status="approved",approved_at=? WHERE id=?',(now(),rid)); c.execute("UPDATE students SET status='approved',access_code=COALESCE(access_code,?) WHERE id=?",(make_code(),st['id'])); c.commit(); c.close(); flash('Đã xác nhận phụ huynh.','success'); return redirect(url_for('pending_parents'))
+
+@app.route('/students')
+@teacher_required
+def students_page():
+    c=db(); rows=c.execute("SELECT s.*,p.username parent_username,p.password_display parent_password,p.verified parent_verified FROM students s LEFT JOIN parents p ON p.student_id=s.id WHERE s.status IN ('approved','verified') ORDER BY s.class_name,s.team,s.name").fetchall(); c.close(); return render_template('students.html',rows=rows)
+
+@app.route('/students/<int:sid>/update',methods=['POST'])
+@teacher_required
+def update_student(sid):
+    c=db(); st=c.execute('SELECT * FROM students WHERE id=?',(sid,)).fetchone();
+    if not st: c.close(); abort(404)
+    # teacher authoritative: replace existing values, including cleared values
+    vals=(request.form['team'].strip(),request.form.get('group_name','').strip(),request.form.get('class_name',st['class_name']).strip(),request.form.get('homeroom_teacher',TEACHER_NAME).strip(),request.form.get('parent_name','').strip(),request.form.get('parent_email','').strip(),sid)
+    c.execute('UPDATE students SET team=?,group_name=?,class_name=?,homeroom_teacher=?,parent_name=?,parent_email=? WHERE id=?',vals); c.execute('UPDATE parents SET email=? WHERE student_id=?',(vals[5],sid));
+    c.execute('UPDATE classes SET group_name=? WHERE class_name=?',(vals[1],vals[2])); c.commit(); c.close(); flash('Đã lưu. Dữ liệu giáo viên chỉnh sửa là dữ liệu mới nhất.','success'); return redirect(url_for('students_page'))
+
+@app.route('/students/<int:sid>/transfer',methods=['POST'])
+@teacher_required
+def transfer_student(sid):
+    c=db(); c.execute('UPDATE students SET class_name=?,team=?,homeroom_teacher=?,transfer_notice=? WHERE id=?',(request.form['class_name'].strip(),request.form['team'].strip(),request.form.get('homeroom_teacher',TEACHER_NAME).strip(),request.form.get('transfer_notice','').strip(),sid)); c.commit(); c.close(); flash('Đã chuyển học sinh.','success'); return redirect(url_for('students_page'))
+
+@app.route('/students/<int:sid>/delete',methods=['POST'])
+@teacher_required
+def delete_student(sid):
+    c=db(); c.execute('DELETE FROM students WHERE id=?',(sid,)); c.commit(); c.close(); flash('Đã xóa hoàn toàn hồ sơ và tài khoản liên quan.','success'); return redirect(url_for('students_page'))
+
+@app.route('/scores',methods=['GET','POST'])
+@teacher_required
+def scores_page():
+    c=db(); students=c.execute("SELECT id,name,class_name,team FROM students WHERE status IN ('approved','verified') ORDER BY class_name,team,name").fetchall()
+    if request.method=='POST':
+        sid=int(request.form['student_id']); criterion=request.form['criterion'].strip(); pts=int(request.form['points']); note=request.form.get('note','').strip(); c.execute('INSERT INTO scores(student_id,criterion,points,note,created_at) VALUES(?,?,?,?,?)',(sid,criterion,pts,note,now())); c.commit(); flash('Đã cập nhật điểm.','success')
+    scores=c.execute('SELECT sc.*,s.name,class_name,team FROM scores sc JOIN students s ON s.id=sc.student_id ORDER BY sc.id DESC').fetchall(); c.close(); return render_template('scores.html',students=students,scores=scores)
+
+@app.route('/tasks',methods=['GET','POST'])
+@teacher_required
+def tasks_page():
+    c=db(); students=c.execute("SELECT id,name,class_name,team FROM students WHERE status IN ('approved','verified') ORDER BY class_name,team,name").fetchall()
+    if request.method=='POST': c.execute('INSERT INTO tasks(student_id,task_date,task,status,points,note) VALUES(?,?,?,?,?,?)',(int(request.form['student_id']),request.form.get('task_date',datetime.now().strftime('%Y-%m-%d')),request.form['task'],request.form['status'],int(request.form.get('points',0)),request.form.get('note',''))); c.commit(); flash('Đã lưu phân công.','success')
+    tasks=c.execute('SELECT t.*,s.name,class_name,team FROM tasks t JOIN students s ON s.id=t.student_id ORDER BY t.id DESC').fetchall(); c.close(); return render_template('tasks.html',students=students,tasks=tasks)
+
+@app.route('/officers',methods=['GET','POST'])
+@teacher_required
+def officers_page():
+    c=db(); students=c.execute("SELECT id,name,class_name,team FROM students WHERE status IN ('approved','verified') ORDER BY class_name,team,name").fetchall()
+    if request.method=='POST':
+        sid=int(request.form['student_id']); role=request.form['role']; scope=request.form['scope']; c.execute('INSERT OR REPLACE INTO class_officers(student_id,role,scope) VALUES(?,?,?)',(sid,role,scope)); c.execute('UPDATE students SET officer_role=?,officer_scope=? WHERE id=?',(role,scope,sid)); c.commit(); flash('Đã cập nhật ban cán sự.','success')
+    rows=c.execute('SELECT o.*,s.name,class_name,team FROM class_officers o JOIN students s ON s.id=o.student_id ORDER BY class_name,team,name').fetchall(); c.close(); return render_template('officers.html',students=students,rows=rows)
+
+@app.route('/diagram',methods=['GET','POST'])
+@teacher_required
+def diagram():
+    c=db()
+    if request.method=='POST':
+        layout=request.form.get('layout','grid')
+        if layout not in ('grid','rows','semicircle'): layout='grid'
+        c.execute('UPDATE diagram_settings SET layout=? WHERE id=1',(layout,))
+        # Persist manual positions when supplied by the browser.
+        payload=request.form.get('positions')
+        if payload:
+            try:
+                data=json.loads(payload)
+                for item in data:
+                    sid=int(item['id']); x=float(item.get('x',0)); y=float(item.get('y',0))
+                    c.execute('INSERT OR REPLACE INTO diagram_positions(student_id,x,y) VALUES(?,?,?)',(sid,x,y))
+            except Exception:
+                flash('Bố cục đã lưu, nhưng một số vị trí kéo-thả không hợp lệ.','error')
+        c.commit()
+    layout=c.execute('SELECT layout FROM diagram_settings WHERE id=1').fetchone()['layout']
+    rows=c.execute("SELECT id,name,class_name,team FROM students WHERE status IN ('approved','verified') ORDER BY class_name,team,name").fetchall()
+    c.close(); return render_template('diagram.html',layout=layout,rows=rows)
+
+@app.route('/ranking')
+@login_required
+def ranking():
+    c=db(); rows=c.execute("SELECT s.id,s.name,s.class_name,s.team,COALESCE(SUM(sc.points),0) total FROM students s LEFT JOIN scores sc ON sc.student_id=s.id WHERE s.status IN ('approved','verified') GROUP BY s.id ORDER BY total DESC,s.name").fetchall(); c.close(); return render_template('ranking.html',rows=rows)
+
+@app.route('/accounts',methods=['GET','POST'])
+@teacher_required
+def accounts():
+    c=db(); rows=c.execute('SELECT s.*,p.username parent_username,p.password_display parent_password,p.verified parent_verified FROM students s LEFT JOIN parents p ON p.student_id=s.id WHERE s.status IN (\'approved\',\'verified\') ORDER BY s.class_name,s.name').fetchall();
+    c.close(); return render_template('accounts.html',rows=rows)
+
+@app.route('/account/student/<int:sid>/reset-parent',methods=['POST'])
+@teacher_required
+def reset_parent(sid):
+    c=db(); pw=make_parent_temp(); pu=unique_username(c,'parent','ph'); old=c.execute('SELECT username FROM parents WHERE student_id=?',(sid,)).fetchone(); pu=old['username'] if old and old['username'] else pu; c.execute('INSERT OR REPLACE INTO parents(student_id,email,username,password_hash,password_display,must_change,verified) VALUES(?,?,?,?,?,?,0)',(sid,c.execute('SELECT parent_email FROM students WHERE id=?',(sid,)).fetchone()['parent_email'],pu,hash_pw(pw),pw,1,0)); c.commit(); c.close(); flash(f'Đã cấp lại mật khẩu phụ huynh: {pw}','success'); return redirect(url_for('accounts'))
+
+@app.route('/delete-all',methods=['GET','POST'])
+@teacher_required
+def delete_all():
+    if request.method=='POST':
+        c=db(); c.execute('DELETE FROM parents'); c.execute('DELETE FROM scores'); c.execute('DELETE FROM tasks'); c.execute('DELETE FROM students'); c.execute('DELETE FROM classes'); c.execute('DELETE FROM parent_requests'); c.commit(); c.close(); flash('Đã xóa toàn bộ dữ liệu học sinh, phụ huynh, điểm, nhiệm vụ và lớp.','success'); return redirect(url_for('dashboard'))
+    return render_template('confirm.html',title='XÓA TOÀN BỘ DỮ LIỆU',message='Thao tác này không thể hoàn tác.')
+
+@app.route('/profile',methods=['GET','POST'])
+@login_required
+def profile():
+    c=db()
+    u=current_user()
+    if is_teacher():
+        tr=c.execute('SELECT * FROM teacher WHERE id=1').fetchone()
+        if request.method=='POST':
+            name=request.form.get('display_name','').strip() or TEACHER_NAME
+            vcode=request.form.get('verification_code','').strip() or make_teacher_code()
+            c.execute('UPDATE teacher SET display_name=?,verification_code=? WHERE id=1',(name,vcode))
+            old=tr['display_name'] or TEACHER_NAME
+            c.execute('UPDATE classes SET homeroom_teacher=? WHERE homeroom_teacher=?',(name,old))
+            c.execute('UPDATE students SET homeroom_teacher=? WHERE homeroom_teacher=?',(name,old))
+            c.execute('UPDATE parent_requests SET homeroom_teacher=? WHERE homeroom_teacher=?',(name,old))
+            c.commit(); tr=c.execute('SELECT * FROM teacher WHERE id=1').fetchone(); flash('Đã lưu hồ sơ giáo viên.','success')
+        c.close(); return render_template('profile.html',profile=tr)
+    st=get_student_for_session(c)
+    p=c.execute('SELECT * FROM parents WHERE student_id=?',(st['id'],)).fetchone() if st else None
+    if not st:
+        c.close(); return redirect(url_for('dashboard'))
+    if request.method=='POST':
+        email=request.form.get('parent_email',st['parent_email']).strip()
+        pname=request.form.get('parent_name',st['parent_name']).strip()
+        # V18/new rule: teacher is authoritative after first-login. Only names/email remain self-editable.
+        if u.get('role')=='student' or u.get('role')=='officer':
+            c.execute('UPDATE students SET parent_name=?,parent_email=? WHERE id=?',(pname,email,st['id']))
+            c.execute('UPDATE parents SET email=? WHERE student_id=?',(email,st['id']))
+        else:
+            c.execute('UPDATE students SET parent_name=?,parent_email=? WHERE id=?',(pname,email,st['id']))
+            c.execute('UPDATE parents SET email=? WHERE student_id=?',(email,st['id']))
+        c.commit(); st=get_student_for_session(c); p=c.execute('SELECT * FROM parents WHERE student_id=?',(st['id'],)).fetchone(); flash('Đã cập nhật thông tin hồ sơ. Tổ/Tên nhóm do giáo viên quản lý sau lần đăng nhập đầu tiên.','success')
+    c.close(); return render_template('profile.html',profile=st,parent=p)
+
+@app.route('/password',methods=['GET','POST'])
+@login_required
+def password_change():
+    if request.method=='POST':
+        old=request.form['old']; new=request.form['new']
+        if len(new)<6: flash('Mật khẩu mới phải có ít nhất 6 ký tự.','error')
+        else:
+            c=db(); u=current_user();
+            if u['role']=='teacher': ok=c.execute('SELECT 1 FROM teacher WHERE id=1 AND password_hash=?',(hash_pw(old),)).fetchone();
+            else: ok=c.execute('SELECT 1 FROM parents WHERE student_id=? AND password_hash=?',(u['student_id'],hash_pw(old))).fetchone() if u['role']=='parent' else c.execute('SELECT 1 FROM students WHERE id=? AND student_password_hash=?',(u['student_id'],hash_pw(old))).fetchone()
+            if not ok: c.close(); flash('Mật khẩu cũ không đúng.','error')
+            else:
+                if u['role']=='teacher': c.execute('UPDATE teacher SET password_hash=? WHERE id=1',(hash_pw(new),))
+                elif u['role']=='parent': c.execute('UPDATE parents SET password_hash=?,must_change=0,password_display=? WHERE student_id=?',(hash_pw(new),new,u['student_id']))
+                else: c.execute('UPDATE students SET student_password_hash=?,student_password_display=? WHERE id=?',(hash_pw(new),new,u['student_id']))
+                c.commit(); c.close(); flash('Đã đổi mật khẩu.','success'); return redirect(url_for('dashboard'))
+    return render_template('password.html')
+
+@app.route('/verify',methods=['GET','POST'])
+@login_required
+def verify_code():
+    if current_user()['role']=='teacher': return redirect(url_for('dashboard'))
+    c=db(); st=get_student_for_session(c)
+    if request.method=='POST':
+        code=request.form['code'].strip(); row=c.execute('SELECT verification_code FROM teacher WHERE id=1').fetchone(); ok1=row and row['verification_code']==code; ok2=st and st['access_code']==code
+        if ok1 or ok2: c.execute("UPDATE students SET status='verified',verified_at=? WHERE id=?",(now(),st['id'])); c.commit(); c.close(); flash('Xác nhận mã thành công.','success'); return redirect(url_for('dashboard'))
+        flash('Mã xác nhận không đúng.','error')
+    c.close(); return render_template('verify.html')
+
+@app.route('/import',methods=['GET','POST'])
+@teacher_required
+def import_excel():
+    if request.method=='POST':
+        f=request.files.get('file')
+        if not f: flash('Chưa chọn file Excel.','error'); return redirect(url_for('import_excel'))
+        try:
+            from openpyxl import load_workbook
+            wb=load_workbook(f.stream); ws=wb.active; rows=list(ws.iter_rows(values_only=True));
+            def norm(v): return ' '.join(str(v or '').replace('\n',' ').split()).strip().lower()
+            aliases={'họ tên học sinh':'Họ tên học sinh','tên học sinh':'Họ tên học sinh','họ tên':'Họ tên học sinh','lớp':'Lớp','lớp học':'Lớp','tổ':'Tổ','tổ/nhóm':'Tổ','nhóm':'Tổ','giáo viên chủ nhiệm':'Giáo viên chủ nhiệm','gv chủ nhiệm':'Giáo viên chủ nhiệm','phụ huynh':'Phụ huynh','họ tên phụ huynh':'Phụ huynh','email phụ huynh':'Email phụ huynh','email':'Email phụ huynh','tên nhóm':'Tên nhóm'}
+            header_row=None; idx={}
+            for ri,rr in enumerate(rows[:20]):
+                trial={aliases[norm(v)]:i for i,v in enumerate(rr) if norm(v) in aliases}
+                if 'Họ tên học sinh' in trial and 'Lớp' in trial: header_row=ri; idx=trial; break
+            if header_row is None: raise ValueError("Không tìm thấy hàng tiêu đề Họ tên học sinh + Lớp trong 20 dòng đầu.")
+            data_rows=rows[header_row+1:]; c=db(); added=0; skipped=0
+            def val(row,*names):
+                for n in names:
+                    if n in idx: return str(row[idx[n]] if idx[n] < len(row) and row[idx[n]] is not None else '').strip()
+                return ''
+            for row in data_rows:
+                name=val(row,'Họ tên học sinh','Tên học sinh'); cls=val(row,'Lớp'); team=val(row,'Tổ'); teacher=val(row,'Giáo viên chủ nhiệm') or TEACHER_NAME; parent=val(row,'Phụ huynh','Họ tên phụ huynh'); email=val(row,'Email phụ huynh');
+                if not name or not cls: continue
+                dup=c.execute('SELECT 1 FROM students WHERE name=? AND class_name=?',(name,cls)).fetchone()
+                if dup: skipped+=1; continue
+                su=unique_username(c,'student','hs'); sp=make_parent_temp(); pu=unique_username(c,'parent','ph'); pp=make_parent_temp(); group=val(row,'Tên nhóm') or f'Nhóm lớp {cls}'
+                c.execute('INSERT INTO students(name,class_name,team,homeroom_teacher,parent_name,parent_email,group_name,status,access_code,created_at,student_username,student_password_hash,student_password_display) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(name,cls,team,teacher,parent,email,group,'approved',make_code(),now(),su,hash_pw(sp),sp)); sid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']; c.execute('INSERT INTO parents(student_id,email,username,password_hash,password_display,must_change,verified) VALUES(?,?,?,?,?,?,1)',(sid,email,pu,hash_pw(pp),pp,0,1)); c.execute('INSERT OR IGNORE INTO classes(class_name,homeroom_teacher,group_name) VALUES(?,?,?)',(cls,teacher,group)); added+=1
+            c.commit(); c.close(); flash(f'Nhập Excel thành công: thêm {added}, bỏ qua {skipped} trùng. Tài khoản HS/PH được tự sinh duy nhất.','success')
+        except Exception as e: flash(f'Nhập Excel thất bại: {e}','error')
+        return redirect(url_for('students_page'))
+    return render_template('import.html')
+
+@app.route('/export')
+@teacher_required
+def export_excel():
+    try:
+        from openpyxl import Workbook
+        c=db(); rows=c.execute('SELECT s.*,p.username parent_username,p.password_display parent_password,p.verified parent_verified FROM students s LEFT JOIN parents p ON p.student_id=s.id ORDER BY s.class_name,s.team,s.name').fetchall(); c.close();
+        wb=Workbook(); ws=wb.active; ws.title='Danh sách học sinh'; headers=['STT','ID','Họ tên học sinh','Lớp','Tổ','Tên nhóm','Giáo viên chủ nhiệm','Phụ huynh','Email phụ huynh','Tài khoản học sinh','Mật khẩu học sinh','Tài khoản phụ huynh','Mật khẩu phụ huynh','Trạng thái HS','PH xác nhận']; ws.append(headers)
+        for i,r in enumerate(rows,1): ws.append([i,r['id'],r['name'],r['class_name'],r['team'],r['group_name'],r['homeroom_teacher'],r['parent_name'],r['parent_email'],r['student_username'],r['student_password_display'],r['parent_username'] or '',r['parent_password'] or '',r['status'],'Đã xác nhận' if r['parent_verified'] else 'Chưa xác nhận'])
+        bio=io.BytesIO(); wb.save(bio); bio.seek(0); return send_file(bio,as_attachment=True,download_name='Danh_sach_hoc_sinh.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e: flash(str(e),'error'); return redirect(url_for('students_page'))
+
+@app.route('/add-student',methods=['GET','POST'])
+@teacher_required
+def add_student():
+    c=db(); classes=c.execute('SELECT * FROM classes ORDER BY class_name').fetchall()
+    if request.method=='POST':
+        name=request.form['name'].strip(); cls=request.form['class_name'].strip(); team=request.form['team'].strip(); teacher=request.form.get('homeroom_teacher',TEACHER_NAME).strip() or TEACHER_NAME; parent=request.form['parent_name'].strip(); email=request.form['parent_email'].strip(); group=request.form.get('group_name','').strip() or f'Nhóm lớp {cls}'
+        if not all([name,cls,team,parent,email]): flash('Thiếu thông tin.','error')
+        else:
+            su=unique_username(c,'student','hs'); sp=make_parent_temp(); pu=unique_username(c,'parent','ph'); pp=make_parent_temp(); c.execute('INSERT INTO students(name,class_name,team,homeroom_teacher,parent_name,parent_email,group_name,status,access_code,created_at,approved_at,verified_at,student_username,student_password_hash,student_password_display) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(name,cls,team,teacher,parent,email,group,'approved',make_code(),now(),now(),now(),su,hash_pw(sp),sp)); sid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']; c.execute('INSERT INTO parents(student_id,email,username,password_hash,password_display,must_change,verified) VALUES(?,?,?,?,?,?,1)',(sid,email,pu,hash_pw(pp),pp,0,1)); c.execute('INSERT OR IGNORE INTO classes(class_name,homeroom_teacher,group_name) VALUES(?,?,?)',(cls,teacher,group)); c.commit(); c.close(); flash(f'Đã thêm {name}. HS: {su}/{sp} • PH: {pu}/{pp}','success'); return redirect(url_for('students_page'))
+    c.close(); return render_template('add_student.html',classes=classes)
+
+@app.route('/summary')
+@login_required
+def summary():
+    c=db(); rows=c.execute('SELECT sm.*,s.name,s.class_name,s.team FROM summaries sm JOIN students s ON s.id=sm.student_id ORDER BY sm.id DESC').fetchall(); c.close(); return render_template('summary.html',rows=rows)
+
+@app.route('/summary/save',methods=['POST'])
+@teacher_required
+def summary_save():
+    c=db(); c.execute('INSERT INTO summaries(student_id,start_date,end_date,learning_situation,commendation,criticism,conclusion,created_at) VALUES(?,?,?,?,?,?,?,?)',(int(request.form['student_id']),request.form['start_date'],request.form['end_date'],request.form.get('learning_situation',''),request.form.get('commendation',''),request.form.get('criticism',''),request.form.get('conclusion',''),now())); c.commit(); c.close(); flash('Đã lưu tổng kết.','success'); return redirect(url_for('summary'))
+
+# ---------- Chat ----------
+@app.route('/chat',methods=['GET','POST'])
+@login_required
+def chat():
+    c=db(); u=current_user(); st=get_student_for_session(c) if not is_teacher() else None
+    if request.method=='POST':
+        msg=request.form.get('message','').strip(); chat_type=request.form.get('chat_type','private'); class_name=request.form.get('class_name','').strip(); peer=request.form.get('peer_student_id') or None; sid=st['id'] if st else None; name=(st['name'] if st else TEACHER_NAME); sender_type='teacher' if is_teacher() else u['role']
+        if not is_teacher():
+            class_name=st['class_name'] if chat_type=='group' else ''
+        attachment_path=''
+        f=request.files.get('attachment')
+        if f and f.filename:
+            ext=os.path.splitext(f.filename)[1].lower()
+            if ext not in ('.png','.jpg','.jpeg','.webp','.pdf','.txt','.xlsx','.csv'):
+                flash('Tệp đính kèm không được hỗ trợ.','error')
+            else:
+                safe=f"{secrets.token_hex(8)}_{os.path.basename(f.filename)}"
+                f.save(os.path.join(UPLOAD_DIR,safe)); attachment_path=safe
+        if msg or attachment_path:
+            c.execute('INSERT INTO chat_messages(chat_type,class_name,peer_student_id,sender_type,sender_student_id,sender_name,message,attachment_path,created_at) VALUES(?,?,?,?,?,?,?,?,?)',(chat_type,class_name,int(peer) if peer else None,sender_type,sid,name,msg,attachment_path,now())); c.commit()
+    if is_teacher():
+        messages=c.execute('SELECT * FROM chat_messages ORDER BY id DESC LIMIT 300').fetchall()
+    else:
+        # Student/parent sees own private chats, class group, and messages addressed to them.
+        if st:
+            messages=c.execute("SELECT * FROM chat_messages WHERE chat_type='group' AND class_name=? OR sender_student_id=? OR peer_student_id=? ORDER BY id DESC LIMIT 300",(st['class_name'],st['id'],st['id'])).fetchall()
+        else: messages=[]
+    quick=c.execute('SELECT * FROM chat_quick_messages ORDER BY id').fetchall(); c.close(); return render_template('chat.html',messages=list(reversed(messages)),quick=quick)
+
+@app.route('/chat/like/<int:mid>',methods=['POST'])
+@login_required
+def chat_like(mid):
+    key=(current_user().get('role','')+':'+str(current_user().get('student_id','teacher'))); c=db(); c.execute('INSERT OR IGNORE INTO chat_likes(message_id,liker_key,created_at) VALUES(?,?,?)',(mid,key,now())); c.commit(); c.close(); return redirect(url_for('chat'))
+
+@app.route('/reminders',methods=['GET','POST'])
+@login_required
+def reminders():
+    c=db()
+    if request.method=='POST': c.execute('INSERT INTO chat_reminders(title,remind_at,note,created_at) VALUES(?,?,?,?)',(request.form['title'],request.form['remind_at'],request.form.get('note',''),now())); c.commit(); flash('Đã lưu nhắc hẹn.','success')
+    rows=c.execute('SELECT * FROM chat_reminders ORDER BY id DESC').fetchall(); c.close(); return render_template('reminders.html',rows=rows)
+
+# QR verification package (native browser)
+@app.route('/qr/<int:sid>')
+@teacher_required
+def qr(sid):
+    c=db(); st=c.execute('SELECT s.*,p.username parent_username,p.password_display parent_password FROM students s LEFT JOIN parents p ON p.student_id=s.id WHERE s.id=?',(sid,)).fetchone(); teacher=c.execute('SELECT verification_code FROM teacher WHERE id=1').fetchone()['verification_code']; c.close();
+    try:
+        import qrcode
+        payload=f"XAC_NHAN_PHU_HUYNH\\nMa giao vien: {teacher}\\nMa xac nhan: {st['access_code']}\\nTai khoan PH: {st['parent_username'] or ''}\\nMat khau PH: {st['parent_password'] or ''}"
+        im=qrcode.make(payload); bio=io.BytesIO(); im.save(bio,format='PNG'); bio.seek(0); return send_file(bio,mimetype='image/png')
+    except Exception: abort(503)
+
+
+# ---------- V18 parity: class/group controls ----------
+@app.route('/classes/<int:cid>/teacher', methods=['POST'])
+@teacher_required
+def edit_class_teacher_web(cid):
+    new=request.form.get('homeroom_teacher','').strip()
+    if not new:
+        flash('Tên giáo viên không được để trống.','error'); return redirect(url_for('classes_page'))
+    c=db(); row=c.execute('SELECT class_name FROM classes WHERE id=?',(cid,)).fetchone()
+    if not row: c.close(); abort(404)
+    old=row['class_name']
+    c.execute('UPDATE classes SET homeroom_teacher=? WHERE id=?',(new,cid))
+    c.execute('UPDATE students SET homeroom_teacher=? WHERE class_name=?',(new,old))
+    c.execute('UPDATE parent_requests SET homeroom_teacher=? WHERE class_name=?',(new,old))
+    c.commit(); c.close(); flash('Đã đổi giáo viên chủ nhiệm và cập nhật hồ sơ liên quan.','success'); return redirect(url_for('classes_page'))
+
+@app.route('/classes/<int:cid>/group', methods=['POST'])
+@teacher_required
+def edit_group_web(cid):
+    new=request.form.get('group_name','').strip()
+    if not new: flash('Tên nhóm không được để trống.','error'); return redirect(url_for('classes_page'))
+    c=db(); row=c.execute('SELECT class_name FROM classes WHERE id=?',(cid,)).fetchone()
+    if not row: c.close(); abort(404)
+    c.execute('UPDATE classes SET group_name=? WHERE id=?',(new,cid)); c.execute('UPDATE students SET group_name=? WHERE class_name=?',(new,row['class_name']))
+    c.commit(); c.close(); flash('Đã đổi tên nhóm cho cả lớp.','success'); return redirect(url_for('classes_page'))
+
+@app.route('/classes/<int:cid>/avatar', methods=['POST'])
+@teacher_required
+def edit_group_avatar_web(cid):
+    f=request.files.get('avatar')
+    if not f or not f.filename:
+        flash('Chưa chọn ảnh nhóm.','error'); return redirect(url_for('classes_page'))
+    ext=os.path.splitext(f.filename)[1].lower()
+    if ext not in ('.png','.jpg','.jpeg','.webp','.gif'):
+        flash('Ảnh nhóm phải là PNG/JPG/WEBP/GIF.','error'); return redirect(url_for('classes_page'))
+    c=db(); row=c.execute('SELECT class_name FROM classes WHERE id=?',(cid,)).fetchone()
+    if not row: c.close(); abort(404)
+    path=os.path.join(UPLOAD_DIR,f'group_{cid}{ext}')
+    f.save(path); c.execute('UPDATE classes SET group_avatar_path=? WHERE id=?',(path,cid)); c.commit(); c.close(); flash('Đã cập nhật ảnh nhóm.','success'); return redirect(url_for('classes_page'))
+
+@app.route('/classes/<int:cid>/delete', methods=['POST'])
+@teacher_required
+def delete_class_web(cid):
+    c=db(); row=c.execute('SELECT class_name FROM classes WHERE id=?',(cid,)).fetchone()
+    if not row: c.close(); abort(404)
+    # Match V18 behavior: remove class row, but keep student records intact.
+    c.execute('DELETE FROM classes WHERE id=?',(cid,)); c.commit(); c.close(); flash(f'Đã xóa lớp {row["class_name"]} khỏi danh sách lớp.','success'); return redirect(url_for('classes_page'))
+
+# ---------- V18 parity: distinct student/parent verification ----------
+@app.route('/verify/<kind>', methods=['GET','POST'])
+@login_required
+def verify_kind(kind):
+    if kind not in ('student','parent') or current_user()['role']=='teacher': return redirect(url_for('dashboard'))
+    c=db(); st=get_student_for_session(c)
+    if not st: c.close(); session.clear(); return redirect(url_for('login'))
+    if request.method=='POST':
+        teacher_code=request.form.get('teacher_code','').strip(); student_code=request.form.get('student_code','').strip()
+        tr=c.execute('SELECT verification_code FROM teacher WHERE id=1').fetchone(); ok=(tr and tr['verification_code']==teacher_code and st['access_code']==student_code)
+        if not ok:
+            flash('Mã giáo viên hoặc mã xác nhận học sinh không đúng.','error')
+        else:
+            if kind=='parent':
+                c.execute("UPDATE students SET status=CASE WHEN status='pending' THEN 'approved' ELSE status END, verified_at=? WHERE id=?",(now(),st['id']))
+                c.execute('UPDATE parents SET verified=1 WHERE student_id=?',(st['id'],))
+            else:
+                c.execute("UPDATE students SET status='verified',verified_at=? WHERE id=?",(now(),st['id']))
+            c.commit(); c.close(); flash('Xác nhận mã thành công.','success'); return redirect(url_for('dashboard'))
+    c.close(); return render_template('verify.html', kind=kind)
+
+# keep legacy verify endpoint but make it show the same two-code form
+
+# ---------- V18 parity: officer data scopes ----------
+@app.route('/officer/<kind>')
+@login_required
+def officer_data(kind):
+    if kind not in ('scores','tasks') or current_user()['role'] not in ('officer','student','parent'):
+        return redirect(url_for('dashboard'))
+    c=db(); st=get_student_for_session(c); off=c.execute('SELECT role,scope FROM class_officers WHERE student_id=?',(st['id'],)).fetchone() if st else None
+    if not st or not off or not off['role']:
+        c.close(); flash('Tài khoản chưa được cấp quyền ban cán sự.','error'); return redirect(url_for('dashboard'))
+    cls=st['class_name']; team=st['team']; scope=off['scope'] or 'Không làm gì cả'
+    if scope=='Tất cả các tổ': where='s.class_name=?'; args=(cls,)
+    elif scope=='Tổ của mình': where='s.class_name=? AND s.team=?'; args=(cls,team)
+    else:
+        c.close(); flash('Quyền hiện tại không cho phép xem dữ liệu tổ.','error'); return redirect(url_for('dashboard'))
+    if kind=='scores': rows=c.execute(f'SELECT s.name,s.team,sc.criterion,sc.points,sc.note,sc.created_at FROM scores sc JOIN students s ON s.id=sc.student_id WHERE {where} ORDER BY s.team,s.name,sc.id DESC',args).fetchall()
+    else: rows=c.execute(f'SELECT s.name,s.team,t.task_date,t.task,t.status,t.points,t.note FROM tasks t JOIN students s ON s.id=t.student_id WHERE {where} ORDER BY s.team,s.name,t.id DESC',args).fetchall()
+    c.close(); return render_template('officer_data.html',kind=kind,scope=scope,student=st,rows=rows)
+
+# ---------- V18 parity: richer account view ----------
+@app.route('/accounts/<int:sid>')
+@teacher_required
+def account_detail(sid):
+    c=db(); st=c.execute('SELECT * FROM students WHERE id=?',(sid,)).fetchone(); p=c.execute('SELECT * FROM parents WHERE student_id=?',(sid,)).fetchone()
+    if not st: c.close(); abort(404)
+    c.close(); return render_template('account_detail.html',student=st,parent=p)
+
+# ---------- V18 parity: QR page with payload ----------
+@app.route('/teacher-qr')
+@teacher_required
+def teacher_qr_manager_web():
+    c=db(); rows=c.execute("SELECT s.id,s.name,s.class_name,s.team,s.access_code,p.username parent_username,p.password_display parent_password FROM students s LEFT JOIN parents p ON p.student_id=s.id WHERE s.status IN ('approved','verified') ORDER BY s.class_name,s.team,s.name").fetchall(); teacher=c.execute('SELECT verification_code FROM teacher WHERE id=1').fetchone()['verification_code']; c.close(); return render_template('teacher_qr.html',rows=rows,teacher_code=teacher)
+
+# ---------- V18 parity: teacher profile photo upload ----------
+@app.route('/profile/teacher-avatar', methods=['POST'])
+@teacher_required
+def teacher_avatar_upload():
+    f=request.files.get('avatar')
+    if not f or not f.filename: flash('Chưa chọn ảnh đại diện.','error'); return redirect(url_for('profile'))
+    ext=os.path.splitext(f.filename)[1].lower()
+    if ext not in ('.png','.jpg','.jpeg','.webp'): flash('Ảnh không hợp lệ.','error'); return redirect(url_for('profile'))
+    path=os.path.join(UPLOAD_DIR,'teacher_avatar'+ext); f.save(path); c=db(); c.execute('UPDATE teacher SET avatar_path=? WHERE id=1',(path,)); c.commit(); c.close(); flash('Đã cập nhật ảnh đại diện giáo viên.','success'); return redirect(url_for('profile'))
+
+# ---------- V18 parity: secure deletion and reminder completion ----------
+@app.route('/reminders/<int:rid>/done', methods=['POST'])
+@login_required
+def reminder_done(rid):
+    c=db(); c.execute('UPDATE chat_reminders SET done=1 WHERE id=?',(rid,)); c.commit(); c.close(); return redirect(url_for('reminders'))
+
+
+
+# ---------- Extended V18 parity controls ----------
+@app.route('/scores/<int:score_id>/delete', methods=['POST'])
+@teacher_required
+def delete_score(score_id):
+    c=db(); c.execute('DELETE FROM scores WHERE id=?',(score_id,)); c.commit(); c.close(); flash('Đã xóa bản ghi điểm.','success'); return redirect(url_for('scores_page'))
+
+@app.route('/tasks/<int:task_id>/delete', methods=['POST'])
+@teacher_required
+def delete_task(task_id):
+    c=db(); c.execute('DELETE FROM tasks WHERE id=?',(task_id,)); c.commit(); c.close(); flash('Đã xóa nhiệm vụ.','success'); return redirect(url_for('tasks_page'))
+
+@app.route('/officers/<int:student_id>/remove', methods=['POST'])
+@teacher_required
+def remove_officer(student_id):
+    c=db(); c.execute('DELETE FROM class_officers WHERE student_id=?',(student_id,)); c.execute("UPDATE students SET officer_role='',officer_scope='Không làm gì cả',transfer_notice=? WHERE id=?",('Thông báo: Chức vụ ban cán sự lớp của bạn đã được giáo viên cập nhật và kết thúc.',student_id)); c.commit(); c.close(); flash('Đã xóa ban cán sự.','success'); return redirect(url_for('officers_page'))
+
+@app.route('/summary/<int:summary_id>/delete', methods=['POST'])
+@teacher_required
+def delete_summary(summary_id):
+    c=db(); c.execute('DELETE FROM summaries WHERE id=?',(summary_id,)); c.commit(); c.close(); flash('Đã xóa nhận xét tổng kết.','success'); return redirect(url_for('summary'))
+
+@app.route('/students/<int:sid>/account', methods=['POST'])
+@teacher_required
+def regenerate_student_account(sid):
+    c=db(); st=c.execute('SELECT * FROM students WHERE id=?',(sid,)).fetchone()
+    if not st: c.close(); abort(404)
+    su=unique_username(c,'student','hs'); sp=make_parent_temp();
+    c.execute('UPDATE students SET student_username=?,student_password_hash=?,student_password_display=? WHERE id=?',(su,hash_pw(sp),sp,sid))
+    c.commit(); c.close(); flash(f'Đã cấp lại tài khoản học sinh: {su} / {sp}','success'); return redirect(url_for('account_detail',sid=sid))
+
+@app.route('/student-notice/done', methods=['POST'])
+@login_required
+def clear_student_notice():
+    u=current_user();
+    if not u.get('student_id'): return redirect(url_for('dashboard'))
+    c=db(); c.execute("UPDATE students SET transfer_notice='' WHERE id=?",(u['student_id'],)); c.commit(); c.close(); return redirect(url_for('dashboard'))
+
+@app.route('/chat/quick', methods=['POST'])
+@teacher_required
+def chat_quick_send():
+    text=request.form.get('text','').strip()
+    if text:
+        c=db(); c.execute('INSERT INTO chat_messages(chat_type,sender_type,sender_name,message,created_at) VALUES(?,?,?,?,?)',('quick','teacher',TEACHER_NAME,text,now())); c.commit(); c.close(); flash('Đã gửi tin nhắn nhanh.','success')
+    return redirect(url_for('chat'))
+
+@app.route('/chat/<int:mid>/delete', methods=['POST'])
+@login_required
+def chat_delete(mid):
+    c=db(); row=c.execute('SELECT sender_type,sender_student_id FROM chat_messages WHERE id=?',(mid,)).fetchone(); u=current_user()
+    allowed=is_teacher() or (row and row['sender_student_id'] and u.get('student_id')==row['sender_student_id'])
+    if allowed: c.execute('DELETE FROM chat_messages WHERE id=?',(mid,)); c.commit(); flash('Đã xóa tin nhắn.','success')
+    c.close(); return redirect(url_for('chat'))
+
+@app.route('/classes/<int:cid>')
+@login_required
+def class_detail(cid):
+    c=db(); cl=c.execute('SELECT * FROM classes WHERE id=?',(cid,)).fetchone()
+    if not cl: c.close(); abort(404)
+    rows=c.execute("SELECT id,name,team,parent_name,parent_email,status,student_username,officer_role,officer_scope FROM students WHERE class_name=? ORDER BY team,name",(cl['class_name'],)).fetchall(); c.close()
+    return render_template('class_detail.html',cl=cl,rows=rows)
+
+@app.route('/students/<int:sid>')
+@login_required
+def student_detail(sid):
+    c=db(); st=c.execute('SELECT * FROM students WHERE id=?',(sid,)).fetchone(); p=c.execute('SELECT * FROM parents WHERE student_id=?',(sid,)).fetchone()
+    if not st: c.close(); abort(404)
+    if not is_teacher() and current_user().get('student_id')!=sid: c.close(); return redirect(url_for('dashboard'))
+    scores=c.execute('SELECT * FROM scores WHERE student_id=? ORDER BY id DESC',(sid,)).fetchall(); tasks=c.execute('SELECT * FROM tasks WHERE student_id=? ORDER BY id DESC',(sid,)).fetchall(); summaries=c.execute('SELECT * FROM summaries WHERE student_id=? ORDER BY id DESC',(sid,)).fetchall(); c.close()
+    return render_template('student_detail.html',student=st,parent=p,scores=scores,tasks=tasks,summaries=summaries)
+
+@app.route('/summary/<int:sid>/report')
+@login_required
+def student_report(sid):
+    c=db(); st=c.execute('SELECT * FROM students WHERE id=?',(sid,)).fetchone();
+    if not st: c.close(); abort(404)
+    if not is_teacher() and current_user().get('student_id')!=sid: c.close(); return redirect(url_for('dashboard'))
+    score=c.execute('SELECT COALESCE(SUM(points),0) total,COALESCE(SUM(CASE WHEN points>0 THEN points ELSE 0 END),0) plus,COALESCE(SUM(CASE WHEN points<0 THEN points ELSE 0 END),0) minus FROM scores WHERE student_id=?',(sid,)).fetchone(); task=c.execute("SELECT COUNT(*) n,COALESCE(SUM(points),0) pts,SUM(CASE WHEN status='Đã hoàn thành' THEN 1 ELSE 0 END) done FROM tasks WHERE student_id=?",(sid,)).fetchone(); rows=c.execute('SELECT * FROM summaries WHERE student_id=? ORDER BY id DESC',(sid,)).fetchall(); c.close()
+    return render_template('student_report.html',student=st,score=score,task=task,rows=rows)
+
+@app.route('/reminders/<int:rid>/delete', methods=['POST'])
+@login_required
+def delete_reminder(rid):
+    c=db(); c.execute('DELETE FROM chat_reminders WHERE id=?',(rid,)); c.commit(); c.close(); flash('Đã xóa nhắc hẹn.','success'); return redirect(url_for('reminders'))
+
+
+# ---------- FINAL parity routes ----------
+@app.route('/parent-requests/<int:rid>/delete', methods=['POST'])
+@teacher_required
+def delete_parent_request(rid):
+    c=db(); c.execute('DELETE FROM parent_requests WHERE id=?',(rid,)); c.commit(); c.close(); flash('Đã xóa yêu cầu phụ huynh.','success'); return redirect(url_for('pending_parents'))
+
+@app.route('/teacher-code')
+@teacher_required
+def teacher_code_page():
+    c=db(); row=c.execute('SELECT verification_code FROM teacher WHERE id=1').fetchone(); c.close(); return render_template('teacher_code.html',code=row['verification_code'])
+
+@app.route('/teacher-code/regenerate', methods=['POST'])
+@teacher_required
+def teacher_code_regenerate_web():
+    code=make_teacher_code(); c=db(); c.execute('UPDATE teacher SET verification_code=? WHERE id=1',(code,)); c.commit(); c.close(); flash(f'Mã giáo viên mới: {code}','success'); return redirect(url_for('teacher_code_page'))
+
+@app.route('/my-account', methods=['GET','POST'])
+@login_required
+def my_account():
+    u=current_user(); c=db(); st=get_student_for_session(c)
+    if not st: c.close(); return redirect(url_for('profile'))
+    p=c.execute('SELECT * FROM parents WHERE student_id=?',(st['id'],)).fetchone()
+    if request.method=='POST':
+        parent_name=request.form.get('parent_name','').strip(); email=request.form.get('parent_email','').strip();
+        # Student/parent may edit only their own parent-contact information. Teacher changes remain authoritative.
+        if parent_name and email and '@' in email:
+            c.execute('UPDATE students SET parent_name=?,parent_email=? WHERE id=?',(parent_name,email,st['id']))
+            c.execute('UPDATE parents SET email=? WHERE student_id=?',(email,st['id'])); c.commit(); flash('Đã cập nhật thông tin tài khoản.','success')
+        else: flash('Tên phụ huynh và email phải hợp lệ.','error')
+    c.close(); return render_template('profile.html',profile=st)
+
+@app.route('/change-my-password', methods=['GET','POST'])
+@login_required
+def change_my_password():
+    u=current_user(); c=db(); st=get_student_for_session(c)
+    if not st: c.close(); return redirect(url_for('password_change'))
+    if request.method=='POST':
+        old=request.form.get('old_password',''); new=request.form.get('new_password',''); confirm=request.form.get('confirm_password','')
+        if len(new)<6 or new!=confirm: flash('Mật khẩu mới phải từ 6 ký tự và nhập lại chính xác.','error')
+        elif u.get('role')=='parent':
+            row=c.execute('SELECT password_hash FROM parents WHERE student_id=?',(st['id'],)).fetchone()
+            if not row or row['password_hash']!=hash_pw(old): flash('Mật khẩu hiện tại không đúng.','error')
+            else: c.execute('UPDATE parents SET password_hash=?,must_change=0 WHERE student_id=?',(hash_pw(new),st['id'])); c.commit(); flash('Đã đổi mật khẩu phụ huynh.','success')
+        else:
+            row=c.execute('SELECT student_password_hash FROM students WHERE id=?',(st['id'],)).fetchone()
+            if not row or row['student_password_hash']!=hash_pw(old): flash('Mật khẩu hiện tại không đúng.','error')
+            else: c.execute('UPDATE students SET student_password_hash=?,student_password_display=? WHERE id=?',(hash_pw(new),new,st['id'])); c.commit(); flash('Đã đổi mật khẩu học sinh.','success')
+    c.close(); return render_template('password.html',self_change=True)
+
+@app.route('/students/<int:sid>/qr-download')
+@teacher_required
+def qr_download(sid):
+    c=db(); st=c.execute('SELECT * FROM students WHERE id=?',(sid,)).fetchone(); p=c.execute('SELECT * FROM parents WHERE student_id=?',(sid,)).fetchone(); tc=c.execute('SELECT verification_code FROM teacher WHERE id=1').fetchone(); c.close()
+    if not st or not p: abort(404)
+    try:
+        import qrcode
+        payload=f"XAC_NHAN_PHU_HUYNH\nMa giao vien: {tc['verification_code']}\nMa xac nhan: {st['access_code']}\nTai khoan PH: {p['username']}\nMat khau PH: {p['password_display']}"
+        bio=io.BytesIO(); qrcode.make(payload).save(bio,format='PNG'); bio.seek(0); return send_file(bio,as_attachment=True,download_name=f'QR_phu_huynh_{sid}.png',mimetype='image/png')
+    except Exception: abort(503)
+
+if __name__=='__main__':
+    init_db(); app.run(host='0.0.0.0',port=int(os.environ.get('PORT','10000')))
+else:
+    init_db()
+
+
+@app.route('/chat/reminder/<int:rid>/delete', methods=['POST'])
+@teacher_required
+def reminder_delete(rid):
+    c=db(); c.execute('DELETE FROM chat_reminders WHERE id=?',(rid,)); c.commit(); c.close(); flash('Đã xóa nhắc hẹn.','success'); return redirect(url_for('reminders'))

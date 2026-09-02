@@ -1,0 +1,657 @@
+    def manage_students(self):
+        self.clear()
+        self.header("👨‍🎓 DANH SÁCH HỌC SINH")
+
+        con = connect()
+        rows = con.execute("""
+            SELECT * FROM students
+            ORDER BY class_name, team, name
+        """).fetchall()
+        con.close()
+
+        tr = self.tree(
+            ("id", "name", "class", "team", "group", "teacher", "parent", "email", "username", "status"),
+            ("ID", "Họ tên học sinh", "Lớp", "Tổ", "Tên nhóm",
+             "Giáo viên chủ nhiệm", "Phụ huynh", "Email", "TK học sinh", "Trạng thái"),
+            [50, 180, 80, 70, 120, 180, 160, 220, 110, 110]
+        )
+        status_text = {
+            "pending": "Chờ duyệt",
+            "approved": "Đã duyệt",
+            "verified": "Đã xác nhận",
+        }
+
+        for r in rows:
+            tr.insert("", "end", values=(
+                r["id"], r["name"], r["class_name"], r["team"], r["group_name"] or "",
+                r["homeroom_teacher"], r["parent_name"], r["parent_email"],
+                r["student_username"] or f"hs{int(r['id']):04d}", status_text.get(r["status"], r["status"])
+            ))
+
+        panel=tk.Frame(self,bg=COLORS["bg"]); panel.pack(pady=4)
+        self.button(panel,"📥 Tải Excel",self.import_students_excel,16,COLORS["blue"]).pack(side="left",padx=4)
+        self.button(panel,"📤 Xuất Excel đầy đủ",self.export_students_excel,20,COLORS["green"]).pack(side="left",padx=4)
+        self.button(panel,"🔄 Chuyển lớp / chuyển tổ",lambda:self.transfer_student(tr),22,COLORS["orange"]).pack(side="left",padx=5)
+        self.button(panel,"🔐 Xem tài khoản + mật khẩu",lambda:self.show_student_credentials(tr),25,COLORS["purple"]).pack(side="left",padx=5)
+        self.button(self,"🗑 Xóa học sinh đã chọn",lambda:self.delete_one_student(tr),24,COLORS["red"]).pack(pady=4)
+
+        self.button(
+            self, "Quay lại", self.teacher_dashboard, 15, "#7f8c8d"
+        ).pack(pady=5)
+
+    def show_student_credentials(self, tree):
+        sel=tree.selection()
+        if not sel:return
+        sid=int(tree.item(sel[0])["values"][0]); con=connect(); st=con.execute("SELECT * FROM students WHERE id=?",(sid,)).fetchone(); p=con.execute("SELECT * FROM parents WHERE student_id=?",(sid,)).fetchone(); con.close()
+        if st: messagebox.showinfo("Thông tin tài khoản",f"Học sinh: {st['name']}\nLớp: {st['class_name']}\nTổ: {st['team']}\n\nTài khoản học sinh: {st['student_username']}\nMật khẩu học sinh: {st['student_password_display']}\n\nTên đăng nhập phụ huynh: {(p['username'] if p and p['username'] else (p['email'] if p else st['parent_email']))}\nMật khẩu phụ huynh: {(p['password_display'] if p and p['password_display'] else 'Chưa có mật khẩu được lưu')}")
+
+    def transfer_student(self, tree):
+        sel=tree.selection()
+        if not sel:return
+        sid=int(tree.item(sel[0])["values"][0]); con=connect(); st=con.execute("SELECT * FROM students WHERE id=?",(sid,)).fetchone(); con.close()
+        if not st:return
+        nc=simpledialog.askstring("Chuyển lớp","Nhập lớp mới:",initialvalue=st["class_name"]);
+        if nc is None:return
+        nt=simpledialog.askstring("Chuyển tổ",f"Học sinh: {st['name']}\nNhập tổ mới:",initialvalue=st["team"]);
+        if nt is None:return
+        nc=nc.strip(); nt=nt.strip();
+        if not nc or not nt:return
+        con=connect(); c=con.execute("SELECT homeroom_teacher FROM classes WHERE class_name=?",(nc,)).fetchone(); teacher=c["homeroom_teacher"] if c else st["homeroom_teacher"]
+        notice=f"Bạn đã được chuyển từ lớp {st['class_name']} - Tổ {st['team']} sang lớp {nc} - Tổ {nt}. Tất cả điểm, nhiệm vụ, thành tích và hồ sơ được giữ nguyên."
+        con.execute("UPDATE students SET class_name=?,team=?,homeroom_teacher=?,transfer_notice=? WHERE id=?",(nc,nt,teacher,notice,sid)); con.commit(); con.close(); messagebox.showinfo("Đã chuyển",notice); self.manage_students()
+
+    def delete_one_student(self, tree):
+        sel = tree.selection()
+        if not sel:
+            messagebox.showwarning("Chọn", "Hãy chọn học sinh cần xóa.")
+            return
+
+        values = tree.item(sel[0])["values"]
+        student_id = values[0]
+        student_name = values[1]
+
+        password = simpledialog.askstring(
+            "🔐 Xác nhận xóa",
+            "Nhập mật khẩu giáo viên:",
+            show="*"
+        )
+        if password is None:
+            return
+
+        con = connect()
+        row = con.execute(
+            "SELECT password_hash FROM teacher WHERE id=1"
+        ).fetchone()
+
+        if not row or row["password_hash"] != hash_pw(password):
+            con.close()
+            messagebox.showerror("Từ chối", "Mật khẩu giáo viên không đúng.")
+            return
+
+        ok = messagebox.askyesno(
+            "Xóa toàn bộ dữ liệu học sinh",
+            f'Xóa "{student_name}" và toàn bộ dữ liệu phụ huynh, điểm, nhiệm vụ, mã xác nhận?'
+        )
+        if not ok:
+            con.close()
+            return
+
+        con.execute("DELETE FROM students WHERE id=?", (student_id,))
+        con.commit()
+        con.close()
+        messagebox.showinfo("Đã xóa", "Đã xóa hoàn toàn dữ liệu học sinh.")
+        self.manage_students()
+
+    # -------------------- SELECT STUDENT --------------------
+    def choose_student(self):
+        con = connect()
+        rows = con.execute("""
+            SELECT id,name,class_name,team,homeroom_teacher,status
+            FROM students
+            ORDER BY class_name,team,name
+        """).fetchall()
+        con.close()
+
+        if not rows:
+            messagebox.showinfo("Chưa có", "Chưa có học sinh được duyệt.")
+            return None
+
+        win = tk.Toplevel(self)
+        win.title("Chọn học sinh")
+        win.geometry("760x480")
+
+        tr = ttk.Treeview(
+            win,
+            columns=("id", "name", "class", "team", "teacher"),
+            show="headings"
+        )
+        for c, h, w in [
+            ("id", "ID", 50),
+            ("name", "Họ tên học sinh", 230),
+            ("class", "Lớp", 80),
+            ("team", "Tổ", 80),
+            ("teacher", "Giáo viên chủ nhiệm", 200),
+            ("status", "Trạng thái", 110),
+        ]:
+            tr.heading(c, text=h)
+            tr.column(c, width=w)
+
+        for r in rows:
+            tr.insert("", "end", values=(
+                r["id"], r["name"], r["class_name"],
+                r["team"], r["homeroom_teacher"], r["status"]
+            ))
+        tr.pack(fill="both", expand=True, padx=10, pady=10)
+
+        result = {"id": None}
+
+        def choose():
+            sel = tr.selection()
+            if sel:
+                result["id"] = tr.item(sel[0])["values"][0]
+                win.destroy()
+
+        self.button(win, "CHỌN", choose, 15, COLORS["blue"]).pack(pady=10)
+        win.grab_set()
+        self.wait_window(win)
+        return result["id"]
+
+    # -------------------- SCORE --------------------
+    def score_manager(self):
+        self.clear()
+        self.header("⭐ ĐIỂM CỘNG / TRỪ", "Chọn học sinh, thông tin lớp và tổ tự hiện")
+
+        card = tk.Frame(self, bg="white", bd=1, relief="solid")
+        card.pack(pady=12, ipadx=35, ipady=20)
+
+        self.selected_student_id = None
+        selected = tk.StringVar(value="Chưa chọn học sinh")
+        criterion = tk.StringVar(value="Đi học đúng giờ")
+        points = tk.StringVar(value="1")
+        note = tk.StringVar()
+
+        self.button(
+            card, "👤 Chọn học sinh",
+            lambda: self.pick_student_label(selected),
+            20, COLORS["blue"]
+        ).grid(row=0, column=0, columnspan=2, pady=7)
+
+        tk.Label(
+            card, textvariable=selected, bg="white",
+            fg="#3155a6", font=("Arial", 12, "bold")
+        ).grid(row=1, column=0, columnspan=2, pady=8)
+
+        for row, label, var in [
+            (2, "Tiêu chí", criterion),
+            (3, "Điểm (+ / -)", points),
+            (4, "Ghi chú", note),
+        ]:
+            tk.Label(card, text=label + ":", bg="white").grid(
+                row=row, column=0, sticky="e", padx=8, pady=7
+            )
+            tk.Entry(card, textvariable=var, width=38).grid(
+                row=row, column=1, padx=8, pady=7
+            )
+
+        self.button(
+            card, "💾 LƯU ĐIỂM",
+            lambda: self.save_score(criterion, points, note),
+            20, COLORS["purple"]
+        ).grid(row=5, column=0, columnspan=2, pady=13)
+
+        tk.Label(
+            self,
+            text="Ví dụ: Bài kiểm tra +8 • Đi học đúng giờ +1 • Làm vệ sinh +2 • Vi phạm -3",
+            bg=COLORS["bg"], fg=COLORS["gray"]
+        ).pack(pady=8)
+
+        self.button(
+            self, "Quay lại", self.teacher_dashboard, 15, "#7f8c8d"
+        ).pack()
+
+    def pick_student_label(self, variable):
+        sid = self.choose_student()
+        if sid is None:
+            return
+        self.selected_student_id = sid
+        con = connect()
+        r = con.execute(
+            "SELECT name,class_name,team,homeroom_teacher FROM students WHERE id=?",
+            (sid,)
+        ).fetchone()
+        con.close()
+        variable.set(
+            f"{r['name']} • {r['class_name']} • {r['team']} • {r['homeroom_teacher']}"
+        )
+
+    def save_score(self, criterion, points, note):
+        if not self.selected_student_id:
+            messagebox.showwarning("Thiếu", "Hãy chọn học sinh.")
+            return
+        if not criterion.get().strip():
+            messagebox.showwarning("Thiếu", "Hãy nhập tiêu chí.")
+            return
+        try:
+            value = int(points.get())
+        except ValueError:
+            messagebox.showerror("Lỗi", "Điểm phải là số nguyên.")
+            return
+
+        con = connect()
+        con.execute("""
+            INSERT INTO scores(student_id,criterion,points,note,created_at)
+            VALUES(?,?,?,?,?)
+        """, (
+            self.selected_student_id, criterion.get().strip(),
+            value, note.get().strip(), now()
+        ))
+        con.commit()
+        con.close()
+        messagebox.showinfo("Đã lưu", "Đã cập nhật điểm.")
+
+    # -------------------- TASKS --------------------
+    def task_manager(self):
+        self.clear()
+        self.header(
+            "🧹 PHÂN CÔNG",
+            "Chọn học sinh → Tổ, lớp và giáo viên chủ nhiệm tự hiện"
+        )
+
+        card = tk.Frame(self, bg="white", bd=1, relief="solid")
+        card.pack(pady=12, ipadx=35, ipady=20)
+
+        self.selected_student_id = None
+        selected = tk.StringVar(value="Chưa chọn học sinh")
+        task = tk.StringVar(value="Trực nhật")
+        status = tk.StringVar(value="Đã hoàn thành")
+        points = tk.StringVar(value="2")
+        note = tk.StringVar()
+
+        self.button(
+            card, "👤 Chọn học sinh",
+            lambda: self.pick_student_label(selected),
+            20, COLORS["blue"]
+        ).grid(row=0, column=0, columnspan=2, pady=7)
+
+        tk.Label(
+            card, textvariable=selected, bg="white",
+            fg="#3155a6", font=("Arial", 12, "bold")
+        ).grid(row=1, column=0, columnspan=2, pady=8)
+
+        tk.Label(card, text="Nhiệm vụ:", bg="white").grid(
+            row=2, column=0, sticky="e", padx=8, pady=7
+        )
+        ttk.Combobox(
+            card, textvariable=task, width=35,
+            values=(
+                "Trực nhật", "Quét lớp", "Lau bảng", "Đổ rác",
+                "Xếp bàn ghế", "Chăm sóc cây", "Chuẩn bị đồ dùng",
+                "Khác"
+            )
+        ).grid(row=2, column=1, padx=8, pady=7)
+
+        tk.Label(card, text="Trạng thái:", bg="white").grid(
+            row=3, column=0, sticky="e", padx=8, pady=7
+        )
+        ttk.Combobox(
+            card, textvariable=status, width=35,
+            values=("Chưa hoàn thành", "Đã hoàn thành", "Không hoàn thành"),
+            state="readonly"
+        ).grid(row=3, column=1, padx=8, pady=7)
+
+        for row, label, var in [
+            (4, "Điểm", points),
+            (5, "Ghi chú", note),
+        ]:
+            tk.Label(card, text=label + ":", bg="white").grid(
+                row=row, column=0, sticky="e", padx=8, pady=7
+            )
+            tk.Entry(card, textvariable=var, width=38).grid(
+                row=row, column=1, padx=8, pady=7
+            )
+
+        self.button(
+            card, "💾 LƯU PHÂN CÔNG",
+            lambda: self.save_task(task, status, points, note),
+            22, "#16a085"
+        ).grid(row=6, column=0, columnspan=2, pady=13)
+
+        self.button(
+            self, "Quay lại", self.teacher_dashboard, 15, "#7f8c8d"
+        ).pack()
+
+    def save_task(self, task, status, points, note):
+        if not self.selected_student_id:
+            messagebox.showwarning("Thiếu", "Hãy chọn học sinh.")
+            return
+        try:
+            value = int(points.get())
+        except ValueError:
+            messagebox.showerror("Lỗi", "Điểm phải là số nguyên.")
+            return
+
+        con = connect()
+        con.execute("""
+            INSERT INTO tasks(
+                student_id,task_date,task,status,points,note
+            ) VALUES(?,?,?,?,?,?)
+        """, (
+            self.selected_student_id,
+            datetime.now().strftime("%d/%m/%Y"),
+            task.get().strip(), status.get(), value, note.get().strip()
+        ))
+        con.commit()
+        con.close()
+        messagebox.showinfo("Đã lưu", "Đã lưu phân công nhiệm vụ.")
+
+    # -------------------- BAN CAN SU --------------------
+    def manage_officers(self):
+        self.clear(); self.header("🧑‍💼 BAN CÁN SỰ LỚP", "Chọn học sinh → nhập chức vụ và quyền xem dữ liệu tổ")
+        con=connect(); rows=con.execute("SELECT s.id,s.name,s.class_name,s.team,COALESCE(o.role,'') officer_role,COALESCE(o.scope,'Không làm gì cả') officer_scope FROM students s LEFT JOIN class_officers o ON o.student_id=s.id WHERE s.status IN ('approved','verified') ORDER BY s.class_name,s.team,s.name").fetchall(); con.close()
+        tr=self.tree(("id","name","class","team","role","scope"),("ID","Họ tên học sinh","Lớp","Tổ","Chức vụ","Quyền tổ"),[55,230,90,70,220,260])
+        for r in rows: tr.insert("","end",values=(r["id"],r["name"],r["class_name"],r["team"],r["officer_role"] or "",r["officer_scope"] or "Không làm gì cả"))
+        panel=tk.Frame(self,bg=COLORS["bg"]); panel.pack(pady=7)
+        def assign():
+            sel=tr.selection()
+            if not sel: messagebox.showwarning("Chọn","Hãy chọn tên học sinh cần làm ban cán sự."); return
+            sid,name=int(tr.item(sel[0])["values"][0]),tr.item(sel[0])["values"][1]
+            entered_name=simpledialog.askstring("Tên người này",f"Tên người này (đang chọn: {name}):",initialvalue=name)
+            if entered_name is None or not entered_name.strip(): return
+            role=simpledialog.askstring("Chức vụ của người này",f"Tên người này: {entered_name.strip()}\n\nNhập chức vụ của người này:")
+            if role is None or not role.strip(): return
+            scope=simpledialog.askstring("Quyền ban cán sự","Nhập 1, 2 hoặc 3:\n1 - Xem điểm cộng tổ mình và phân công/nhiệm vụ tổ mình\n2 - Xem điểm cộng tất cả các tổ và phân công/nhiệm vụ tất cả các tổ\n3 - Không làm gì cả",initialvalue="1")
+            if scope is None:return
+            scope={"1":"Tổ mình","2":"Tất cả các tổ","3":"Không làm gì cả"}.get(scope.strip(),"Không làm gì cả")
+            con2=connect(); con2.execute("INSERT OR REPLACE INTO class_officers(student_id,role,scope) VALUES(?,?,?)",(sid,role.strip(),scope)); con2.execute("UPDATE students SET name=?,officer_role=?,officer_scope=?,transfer_notice='' WHERE id=?",(entered_name.strip(),role.strip(),scope,sid)); con2.commit(); con2.close(); messagebox.showinfo("Đã cập nhật",f"Tên: {entered_name.strip()}\nChức vụ: {role.strip()}\nQuyền: {scope}"); self.manage_officers()
+        def remove():
+            sel=tr.selection()
+            if not sel:return
+            sid,name=int(tr.item(sel[0])["values"][0]),tr.item(sel[0])["values"][1]
+            if not messagebox.askyesno("Xóa ban cán sự",f"Xóa chức vụ ban cán sự của {name}?"):return
+            con2=connect(); con2.execute("DELETE FROM class_officers WHERE student_id=?",(sid,)); con2.execute("UPDATE students SET officer_role='',officer_scope='Không làm gì cả',transfer_notice=? WHERE id=?",("Thông báo: Chức vụ ban cán sự lớp của bạn đã được giáo viên cập nhật và kết thúc.",sid)); con2.commit(); con2.close(); messagebox.showinfo("Đã xóa",f"Đã xóa ban cán sự của {name}. Học sinh sẽ nhận thông báo khi đăng nhập lại."); self.manage_officers()
+        self.button(panel,"✅ Thêm/sửa ban cán sự",assign,22,COLORS["green"]).pack(side="left",padx=5); self.button(panel,"↩ Xóa ban cán sự",remove,18,COLORS["red"]).pack(side="left",padx=5); self.button(self,"Quay lại",self.teacher_dashboard,15,"#7f8c8d").pack(pady=7)
+
+    def officer_view(self):
+        self.clear(); self.header("🧑‍💼 BAN CÁN SỰ", "Mọi người đều xem được; chỉ giáo viên mới được sửa")
+        con=connect()
+        rows=con.execute("""
+            SELECT s.name,s.class_name,s.team,COALESCE(o.role,'') role
+            FROM students s LEFT JOIN class_officers o ON o.student_id=s.id
+            WHERE s.status IN ('approved','verified') AND COALESCE(o.role,'')<>''
+            ORDER BY s.class_name,s.team,s.name
+        """).fetchall(); con.close()
+        tr=self.tree(("name","class","team","role"),("Họ tên học sinh","Lớp","Tổ","Vai trò ban cán sự"),[300,120,100,320])
+        for r in rows: tr.insert("", "end",values=(r["name"],r["class_name"],r["team"],r["role"]))
+        self.button(self,"Quay lại hồ sơ",self.student_home,15,"#7f8c8d").pack(pady=8)
+
+    # -------------------- SƠ ĐỒ LỚP TƯƠNG TÁC --------------------
+    def diagram_view(self, teacher_edit=False):
+        self.clear()
+        self.header("🗺 SƠ ĐỒ LỚP", "Kéo/thay đổi sơ đồ chỉ dành cho giáo viên; mọi người đều có thể bấm vào từng ô")
+
+        con=connect()
+        classes=con.execute("SELECT class_name FROM classes ORDER BY class_name").fetchall()
+        if not classes:
+            classes=con.execute("SELECT DISTINCT class_name FROM students ORDER BY class_name").fetchall()
+        con.close()
+        class_names=[r["class_name"] for r in classes]
+        if not class_names:
+            messagebox.showinfo("Chưa có dữ liệu","Chưa có lớp/học sinh để vẽ sơ đồ.")
+            self.show_login() if not teacher_edit else self.teacher_dashboard(); return
+
+        top=tk.Frame(self,bg=COLORS["bg"]); top.pack(fill="x",padx=20)
+        selected_class=tk.StringVar(value=class_names[0])
+        ttk.Combobox(top,textvariable=selected_class,values=class_names,state="readonly",width=16).pack(side="left",padx=4)
+        layout=tk.StringVar(value="grid")
+        con=connect(); setting=con.execute("SELECT layout FROM diagram_settings WHERE id=1").fetchone(); con.close()
+        if setting: layout.set(setting["layout"])
+
+        tk.Label(top,text="Kiểu sơ đồ:",bg=COLORS["bg"]).pack(side="left",padx=(15,4))
+        layout_box=ttk.Combobox(top,textvariable=layout,values=("grid","rows","semicircle"),state="readonly",width=14)
+        layout_box.pack(side="left",padx=4)
+
+        canvas=tk.Canvas(self,bg="white",highlightthickness=1,highlightbackground="#cbd5e1")
+        canvas.pack(fill="both",expand=True,padx=20,pady=12)
+        info=tk.StringVar(value="Bấm vào một học sinh để xem thông tin")
+        tk.Label(self,textvariable=info,bg=COLORS["bg"],fg=COLORS["gray"]).pack(pady=3)
+
+        drag={"item":None,"offset":(0,0),"student_id":None}
+        node_map={}
+
+        def get_students():
+            con=connect(); rows=con.execute("""
+                SELECT s.id,s.name,s.class_name,s.team,COALESCE(o.role,'') role
+                FROM students s LEFT JOIN class_officers o ON o.student_id=s.id
+                WHERE s.class_name=? AND s.status IN ('approved','verified')
+                ORDER BY s.team,s.name
+            """,(selected_class.get(),)).fetchall(); con.close(); return rows
+
+        def draw():
+            canvas.delete("all"); node_map.clear()
+            rows=get_students()
+            w=max(canvas.winfo_width(),800); h=max(canvas.winfo_height(),520)
+            title_y=40
+            canvas.create_text(w/2,title_y,text=f"{selected_class.get()} • Giáo viên chủ nhiệm",font=("Arial",18,"bold"),fill="#3155a6")
+            canvas.create_rectangle(w/2-90,70,w/2+90,110,fill="#e8eefc",outline="#7b8fcf")
+            canvas.create_text(w/2,90,text="BẢNG / GIÁO VIÊN",font=("Arial",10,"bold"),fill="#3155a6")
+            if not rows:return
+            n=len(rows); r=rows
+            positions=[]
+            if layout.get()=="rows":
+                cols=4; cell_w=180; cell_h=100
+                for i in range(n):
+                    row=i//cols; col=i%cols
+                    positions.append((120+col*cell_w,160+row*cell_h))
+            elif layout.get()=="semicircle":
+                import math
+                cx=w/2; cy=310; rx=max(220,w*0.35); ry=max(120,h*0.28)
+                for i in range(n):
+                    ang=math.pi*0.1 + (math.pi*0.8*(i/(max(1,n-1))))
+                    positions.append((cx-rx*math.cos(ang), cy-ry*math.sin(ang)))
+            else:
+                cols=max(3,min(6,(w-80)//170));
+                for i in range(n):
+                    row=i//cols; col=i%cols
+                    positions.append((90+col*170,160+row*100))
+            for row,(x,y) in zip(r,positions):
+                fill="#fff7e6" if row["role"] else "#f7fbff"
+                outline="#f39c12" if row["role"] else "#7aa2e8"
+                item=canvas.create_rectangle(x,y,x+145,y+72,fill=fill,outline=outline,width=2)
+                title=row["name"][:20]
+                role_text=f"\n{row['role']}" if row["role"] else ""
+                canvas.create_text(x+72,y+22,text=title,font=("Arial",10,"bold"),fill="#263238")
+                canvas.create_text(x+72,y+48,text=f"{row['team']} • {row['role']}" if row['role'] else row['team'],font=("Arial",9),fill="#667085")
+                node_map[item]=(row,x,y)
+                canvas.tag_bind(item,"<Button-1>",lambda e,it=item: click_node(it))
+                if teacher_edit:
+                    canvas.tag_bind(item,"<B1-Motion>",lambda e,it=item: drag_node(e,it))
+                    canvas.tag_bind(item,"<ButtonPress-1>",lambda e,it=item: start_drag(e,it))
+
+        def click_node(item):
+            row=node_map[item][0]
+            info.set(f"{row['name']}  •  {row['class_name']}  •  {row['team']}  •  {row['role'] or 'Học sinh'}")
+
+        def start_drag(event,item):
+            drag["item"]=item; drag["offset"]=(event.x, event.y)
+        def drag_node(event,item):
+            if not teacher_edit or drag["item"]!=item:return
+            row,x,y=node_map[item]; dx=event.x-drag["offset"][0]; dy=event.y-drag["offset"][1]
+            canvas.move(item,dx,dy)
+            # Move text items belonging to same student is not stored; redraw is used as lightweight editor.
+            drag["offset"]=(event.x,event.y)
+            info.set("Đang kéo ô học sinh... bấm 'Lưu vị trí' để giữ bố cục trong phiên này.")
+
+        def apply_layout():
+            if not teacher_edit:
+                return
+            con=connect(); con.execute("UPDATE diagram_settings SET layout=? WHERE id=1",(layout.get(),)); con.commit(); con.close(); draw()
+        def save_layout():
+            if teacher_edit:
+                con=connect(); con.execute("UPDATE diagram_settings SET layout=? WHERE id=1",(layout.get(),)); con.commit(); con.close(); messagebox.showinfo("Đã lưu","Đã lưu kiểu sơ đồ cho cả lớp.")
+        layout_box.bind("<<ComboboxSelected>>",lambda e: draw())
+        ttk.Combobox(top,textvariable=selected_class,values=class_names,state="readonly",width=16).bind if False else None
+
+        if teacher_edit:
+            self.button(top,"💾 Lưu kiểu sơ đồ",save_layout,18,COLORS["green"]).pack(side="left",padx=6)
+            self.button(top,"↻ Vẽ lại",draw,13,COLORS["orange"]).pack(side="left",padx=4)
+        else:
+            layout_box.configure(state="disabled")
+
+        # Re-draw when class changes by attaching a fresh binding to the first combobox.
+        for widget in top.winfo_children():
+            if isinstance(widget, ttk.Combobox) and widget is not layout_box:
+                widget.bind("<<ComboboxSelected>>", lambda e: draw())
+
+        self.button(self,"Quay lại hồ sơ",self.teacher_dashboard if teacher_edit else self.student_home,15,"#7f8c8d").pack(pady=6)
+        self.after(100,draw)
+
+    # -------------------- RANKING --------------------
+    def ranking(self):
+        self.clear()
+        self.header("🏆 XẾP HẠNG HỌC SINH", "Tổng điểm cộng / trừ")
+
+        con = connect()
+        rows = con.execute("""
+            SELECT s.name,s.class_name,s.team,
+                   COALESCE(SUM(sc.points),0) AS total
+            FROM students s
+            LEFT JOIN scores sc ON s.id=sc.student_id
+            WHERE s.status IN ('approved','verified')
+            GROUP BY s.id
+            ORDER BY total DESC, s.name ASC
+        """).fetchall()
+        con.close()
+
+        tr = self.tree(
+            ("rank","name","class","team","total"),
+            ("Hạng","Họ tên học sinh","Lớp","Tổ","Tổng điểm"),
+            [70,320,100,90,140]
+        )
+        for i, r in enumerate(rows, start=1):
+            tr.insert("", "end", values=(
+                i, r["name"], r["class_name"], r["team"], r["total"]
+            ))
+
+        self.button(
+            self, "Quay lại", self.teacher_dashboard, 15, "#7f8c8d"
+        ).pack(pady=8)
+
+    # -------------------- ACCOUNT / SECURITY MANAGEMENT --------------------
+    def manage_accounts(self):
+        self.clear()
+        self.header("🔐 TÀI KHOẢN & BẢO MẬT", "Giáo viên xem trạng thái tài khoản và quản lý quyền truy cập")
+
+        con = connect()
+        rows = con.execute("""
+            SELECT p.student_id, p.email, p.verified, p.must_change,
+                   s.name, s.class_name, s.team, s.parent_name, s.status
+            FROM parents p JOIN students s ON s.id=p.student_id
+            ORDER BY s.class_name, s.name
+        """).fetchall()
+        con.close()
+
+        tr = self.tree(
+            ("sid","student","class","team","parent","email","verified","must_change"),
+            ("ID HS","Học sinh","Lớp","Tổ","Phụ huynh","Email tài khoản PH","Xác nhận","Đổi MK lần đầu"),
+            [70,200,90,70,180,280,100,120]
+        )
+        for r in rows:
+            tr.insert("", "end", values=(
+                r["student_id"], r["name"], r["class_name"], r["team"],
+                r["parent_name"], r["email"],
+                "Đã xác nhận" if r["verified"] else "Chưa xác nhận",
+                "Có" if r["must_change"] else "Không"
+            ))
+
+        panel = tk.Frame(self, bg=COLORS["bg"])
+        panel.pack(pady=8)
+
+        def reset_parent():
+            sel = tr.selection()
+            if not sel:
+                messagebox.showwarning("Chọn", "Hãy chọn tài khoản phụ huynh.")
+                return
+            sid = tr.item(sel[0])["values"][0]
+            teacher_pw = simpledialog.askstring("Xác nhận giáo viên", "Nhập mật khẩu giáo viên:", show="*")
+            if teacher_pw is None:
+                return
+            con2 = connect()
+            row = con2.execute("SELECT password_hash FROM teacher WHERE id=1").fetchone()
+            if not row or row["password_hash"] != hash_pw(teacher_pw):
+                con2.close()
+                messagebox.showerror("Từ chối", "Mật khẩu giáo viên không đúng.")
+                return
+            temp = make_parent_temp()
+            con2.execute("UPDATE parents SET password_hash=?, password_display=?, must_change=1 WHERE student_id=?", (hash_pw(temp), temp, sid))
+            con2.commit(); con2.close()
+            messagebox.showinfo("Đã cấp lại", f"Mật khẩu phụ huynh mới do giáo viên cấp:\n{temp}\n\nĐây không phải mật khẩu email.")
+            self.manage_accounts()
+
+        def delete_parent():
+            sel = tr.selection()
+            if not sel:
+                messagebox.showwarning("Chọn", "Hãy chọn phụ huynh.")
+                return
+            sid = tr.item(sel[0])["values"][0]
+            teacher_pw = simpledialog.askstring("Xóa phụ huynh", "Nhập mật khẩu giáo viên:", show="*")
+            if teacher_pw is None:
+                return
+            con2 = connect()
+            row = con2.execute("SELECT password_hash FROM teacher WHERE id=1").fetchone()
+            if not row or row["password_hash"] != hash_pw(teacher_pw):
+                con2.close(); messagebox.showerror("Từ chối", "Mật khẩu giáo viên không đúng."); return
+            ok = messagebox.askyesno("Xóa tài khoản phụ huynh", "Xóa tài khoản phụ huynh khỏi hệ thống? Hồ sơ học sinh vẫn giữ nguyên.")
+            if ok:
+                con2.execute("DELETE FROM parents WHERE student_id=?", (sid,))
+                con2.commit()
+            con2.close()
+            if ok: self.manage_accounts()
+
+        tk.Label(panel, text="Lưu ý: vì lý do bảo mật, mật khẩu thật không hiển thị. Giáo viên có thể cấp lại mật khẩu.", bg=COLORS["bg"], fg=COLORS["gray"]).pack(side="left", padx=8)
+        self.button(panel, "🔁 Cấp lại MK PH", reset_parent, 16, COLORS["purple"]).pack(side="left", padx=4)
+        self.button(panel, "🗑 Xóa PH", delete_parent, 13, COLORS["red"]).pack(side="left", padx=4)
+        self.button(self, "Quay lại", self.teacher_dashboard, 15, "#7f8c8d").pack(pady=8)
+
+    # -------------------- DELETE ALL --------------------
+    def delete_all_data(self):
+        pwd = simpledialog.askstring(
+            "🔐 XÓA TOÀN BỘ DỮ LIỆU",
+            "Nhập mật khẩu giáo viên để tiếp tục:",
+            show="*"
+        )
+        if pwd is None:
+            return
+
+        con = connect()
+        row = con.execute(
+            "SELECT password_hash FROM teacher WHERE id=1"
+        ).fetchone()
+        if not row or row["password_hash"] != hash_pw(pwd):
+            con.close()
+            messagebox.showerror("Từ chối", "Mật khẩu giáo viên không đúng.")
+            return
+
+        confirm = messagebox.askyesno(
+            "⚠ XÁC NHẬN LẦN CUỐI",
+            "Xóa TẤT CẢ học sinh, phụ huynh, điểm, nhiệm vụ và lớp?\n\n"
+            "Dữ liệu đã xóa sẽ không thể đăng nhập hoặc khôi phục từ ứng dụng này."
+        )
+        if not confirm:
+            con.close()
+            return
+
+        con.execute("DELETE FROM parents")
+        con.execute("DELETE FROM scores")
+        con.execute("DELETE FROM tasks")
+        con.execute("DELETE FROM students")
+        con.execute("DELETE FROM classes")
+        con.commit()
+        con.close()
+
+        messagebox.showinfo(
+            "Đã xóa",
+            "Đã xóa toàn bộ dữ liệu. Dữ liệu/tài khoản phụ huynh cũ không còn truy cập được."
+        )
+        self.teacher_dashboard()
+
+    # -------------------- PARENT LOGIN --------------------
