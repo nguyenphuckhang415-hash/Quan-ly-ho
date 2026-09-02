@@ -6,4 +6,4 @@ ENV PYTHONUNBUFFERED=1
 ENV V18_DATA_DIR=/var/data
 RUN mkdir -p /var/data/uploads
 EXPOSE 10000
-CMD ["sh","-c","gunicorn --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 4 --timeout 120 app:app"]
+CMD ["sh","-c","python -m gunicorn --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 4 --timeout 120 app:app"]
